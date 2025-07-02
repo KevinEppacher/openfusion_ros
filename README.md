@@ -1,1 +1,0 @@
-# openfusion_ros
