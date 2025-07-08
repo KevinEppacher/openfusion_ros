@@ -26,6 +26,5 @@ class VLMBaseLifecycleNode(LifecycleNode):
         self.get_logger().info("Shutting down the lifecycle node.")
         return TransitionCallbackReturn.SUCCESS
 
-    # Diese Methoden implementieren Kindklassen:
     def load_model(self):
         raise NotImplementedError
