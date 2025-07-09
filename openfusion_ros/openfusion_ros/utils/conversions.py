@@ -1,4 +1,5 @@
 from tf_transformations import quaternion_matrix
+from geometry_msgs.msg import Pose
 
 def transform_to_matrix(transform_stamped):
     t = transform_stamped.transform.translation
@@ -8,3 +9,12 @@ def transform_to_matrix(transform_stamped):
     matrix[1, 3] = t.y
     matrix[2, 3] = t.z
     return matrix
+
+def pose_msg_to_matrix(pose_msg: Pose):
+    q = [pose_msg.orientation.x, pose_msg.orientation.y,
+         pose_msg.orientation.z, pose_msg.orientation.w]
+    T = quaternion_matrix(q)
+    T[0, 3] = pose_msg.position.x
+    T[1, 3] = pose_msg.position.y
+    T[2, 3] = pose_msg.position.z
+    return T
