@@ -9,8 +9,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         super().__init__('openfusion_node')
 
     def load_model(self):
-        self.get_logger().info(f"{YELLOW}Loading model... {RESET}")
-        self.get_logger().info(f"{BLUE}{BOLD}Model loaded successfully.{RESET}")
+        self.get_logger().debug(f"{YELLOW}{BOLD}Loading model... {RESET}")
+        self.get_logger().debug(f"{BLUE}{BOLD}Model loaded successfully.{RESET}")
 
     def load_robot(self):
         self.robot = Robot(self)

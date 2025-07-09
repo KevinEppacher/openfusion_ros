@@ -21,44 +21,49 @@ class Camera:
         self.depth_sub = None
         self.rgb_topic = None
         self.depth_topic = None
+        self.debug_images = False
 
     def on_configure(self):
-        self.node.get_logger().info(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
 
         # Declare parameters for frame names
         self.node.declare_parameter("rgb_topic", "rgb")
         self.node.declare_parameter("depth_topic", "depth")
+        self.node.declare_parameter("debug_images", False)
 
         # Get parameter values
         self.rgb_topic = self.node.get_parameter("rgb_topic").get_parameter_value().string_value
         self.depth_topic = self.node.get_parameter("depth_topic").get_parameter_value().string_value
+        self.debug_images = self.node.get_parameter("debug_images").get_parameter_value().bool_value
 
-        self.node.get_logger().info(f"{BLUE}{BOLD}Finished configuring {self.class_name}{RESET}")
+        self.node.get_logger().debug(f"{BLUE}{BOLD}Finished configuring {self.class_name}{RESET}")
 
 
     def on_activate(self):
-        self.node.get_logger().info(f"{YELLOW}{BOLD}Activating {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{YELLOW}{BOLD}Activating {self.class_name}...{RESET}")
 
         # Subscribers
         self.rgb_sub = self.node.create_subscription(Image, '/rgb', self.rgb_callback, 10)
         self.depth_sub = self.node.create_subscription(Image, '/depth', self.depth_callback, 10)
 
-        self.node.get_logger().info(f"{BLUE}{self.class_name} activated.{RESET}")
+        self.node.get_logger().debug(f"{BLUE}{self.class_name} activated.{RESET}")
 
     def on_deactivate(self):
-        self.node.get_logger().info(f"{YELLOW}Deactivating {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{YELLOW}Deactivating {self.class_name}...{RESET}")
 
     def on_cleanup(self):
-        self.node.get_logger().info(f"{BLUE}Cleaning up {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{BLUE}Cleaning up {self.class_name}...{RESET}")
 
     def on_shutdown(self):
-        self.node.get_logger().info(f"{RED}{BOLD}Shutting down {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{RED}{BOLD}Shutting down {self.class_name}...{RESET}")
 
     def rgb_callback(self, msg: Image):
-        show_ros_image(msg, "RGB Image")
+        if self.debug_images:
+            show_ros_image(msg, "RGB Image")
 
     def depth_callback(self, msg: Image):
-        show_ros_depth_image(msg, "Depth Image")
+        if self.debug_images:
+            show_ros_depth_image(msg, "Depth Image")
 
 class Robot:
     def __init__(self, node):
@@ -71,7 +76,7 @@ class Robot:
         self.tf_listener = TransformListener(self.tf_buffer, self.node)
 
     def on_configure(self):
-        self.node.get_logger().info(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
 
         # Declare parameters for frame names
         self.node.declare_parameter("parent_frame", "map")
@@ -81,25 +86,25 @@ class Robot:
         self.parent_frame = self.node.get_parameter("parent_frame").get_parameter_value().string_value
         self.child_frame = self.node.get_parameter("child_frame").get_parameter_value().string_value
 
-        self.node.get_logger().info(f"{BLUE}{BOLD}Finished configuring {self.class_name}{RESET}")
+        self.node.get_logger().debug(f"{BLUE}{BOLD}Finished configuring {self.class_name}{RESET}")
         self.camera.on_configure()
         
 
     def on_activate(self):
-        self.node.get_logger().info(f"{YELLOW}{BOLD}Activating {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{YELLOW}{BOLD}Activating {self.class_name}...{RESET}")
         self.camera.on_activate()
-        self.node.get_logger().info(f"{BLUE}{self.class_name} activated.{RESET}")
+        self.node.get_logger().debug(f"{BLUE}{self.class_name} activated.{RESET}")
 
     def on_deactivate(self):
-        self.node.get_logger().info(f"{YELLOW}Deactivating {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{YELLOW}Deactivating {self.class_name}...{RESET}")
         pass
 
     def on_cleanup(self):
-        self.node.get_logger().info(f"{BLUE}Cleaning up {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{BLUE}Cleaning up {self.class_name}...{RESET}")
         pass
 
     def on_shutdown(self):
-        self.node.get_logger().info(f"{RED}{BOLD}Shutting down {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{RED}{BOLD}Shutting down {self.class_name}...{RESET}")
         pass
 
     def get_pose(self):

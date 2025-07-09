@@ -9,6 +9,7 @@ openfusion_ros:
       child_frame: "camera" # The frame in which the camera is defined
       rgb_topic: "rgb"
       depth_topic: "depth"
+      debug_images: false # Enable debug images
       topk: 10
       depth_max: 10.0
       logging.enabled: true # Enable logging
