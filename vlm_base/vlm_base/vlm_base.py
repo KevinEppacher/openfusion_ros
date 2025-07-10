@@ -12,17 +12,21 @@ class VLMBaseLifecycleNode(LifecycleNode):
     def on_configure(self, state: State):
         self.get_logger().info(f"{YELLOW}{BOLD}[{self.get_name()}] Configuring...{RESET}")
         try:
-            self.load_model()
-            self.load_robot()
+            self.robot = self.load_robot()
+            if not self.robot:
+                self.get_logger().error(f"{RED}[{self.get_name()}] Robot could not be created.{RESET}")
+                return TransitionCallbackReturn.FAILURE
+
+            self.robot.on_configure()
+            self.get_logger().info(f"{GREEN}[{self.get_name()}] Robot configured.{RESET}")
+
+            if not self.load_model():
+                self.get_logger().error(f"{RED}[{self.get_name()}] Model could not be loaded.{RESET}")
+                return TransitionCallbackReturn.FAILURE
+
         except Exception as e:
             self.get_logger().error(f"{RED}[{self.get_name()}] Configuration failed: {e}{RESET}")
             return TransitionCallbackReturn.FAILURE
-
-        if self.robot:
-            self.robot.on_configure()
-            self.get_logger().info(f"{GREEN}[{self.get_name()}] Robot configured.{RESET}")
-        else:
-            self.get_logger().warn(f"{YELLOW}[{self.get_name()}] No robot instance available.{RESET}")
 
         self.get_logger().info(f"{GREEN}{BOLD}[{self.get_name()}] Configuration complete.{RESET}")
         return TransitionCallbackReturn.SUCCESS
@@ -57,10 +61,12 @@ class VLMBaseLifecycleNode(LifecycleNode):
     def on_cleanup(self, state: State):
         self.get_logger().info(f"{BLUE}[{self.get_name()}] Cleaning up...{RESET}")
         self.robot = None
+        self.model = None
         return TransitionCallbackReturn.SUCCESS
 
     def on_shutdown(self, state: State):
         self.get_logger().info(f"{RED}{BOLD}[{self.get_name()}] Shutting down...{RESET}")
+        
         return TransitionCallbackReturn.SUCCESS
 
     def load_model(self):

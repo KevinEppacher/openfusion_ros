@@ -30,7 +30,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'openfusion_ros = openfusion_ros.openfusion_ros_node:main',
+            'openfusion_ros = openfusion_ros.ros2_wrapper.openfusion_ros_node:main',
         ],
     },
 )

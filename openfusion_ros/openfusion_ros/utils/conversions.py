@@ -1,5 +1,8 @@
 from tf_transformations import quaternion_matrix
 from geometry_msgs.msg import Pose
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+import numpy as np
 
 def transform_to_matrix(transform_stamped):
     t = transform_stamped.transform.translation
@@ -18,3 +21,6 @@ def pose_msg_to_matrix(pose_msg: Pose):
     T[1, 3] = pose_msg.position.y
     T[2, 3] = pose_msg.position.z
     return T
+
+def convert_stamp_to_sec(stamp):
+    return stamp.sec + stamp.nanosec * 1e-9

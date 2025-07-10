@@ -4,8 +4,9 @@ from geometry_msgs.msg import PoseStamped
 from tf_transformations import translation_from_matrix, quaternion_from_matrix
 
 from openfusion_ros.utils import BLUE, RED, YELLOW, BOLD, RESET, RED
-from openfusion_ros.utils.conversions import transform_to_matrix
-from openfusion_ros.camera import Camera
+from openfusion_ros.utils.conversions import transform_to_matrix, convert_stamp_to_sec
+from openfusion_ros.ros2_wrapper.camera import Camera
+from openfusion_ros.utils.opencv import ros_image_2_opencv
 
 class Robot:
     def __init__(self, node):
@@ -19,7 +20,7 @@ class Robot:
 
         self.pose_pub = None
         self.pose_timer = None
-        self.publish_interval = 0.2  # seconds
+        self.publish_interval = 0.01  # seconds
 
     def on_configure(self):
         self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
@@ -27,10 +28,12 @@ class Robot:
         self.node.declare_parameter("parent_frame", "map")
         self.node.declare_parameter("child_frame", "camera")
         self.node.declare_parameter("pose_topic", "robot_pose")
+        self.node.declare_parameter("max_delta_time", 0.01)
 
         self.parent_frame = self.node.get_parameter("parent_frame").get_parameter_value().string_value
         self.child_frame = self.node.get_parameter("child_frame").get_parameter_value().string_value
         self.pose_topic = self.node.get_parameter("pose_topic").get_parameter_value().string_value
+        self.max_delta_time = self.node.get_parameter("max_delta_time").get_parameter_value().double_value
 
         self.node.get_logger().debug(f"{BLUE}{BOLD}Finished configuring {self.class_name}{RESET}")
         self.camera.on_configure()
@@ -65,17 +68,61 @@ class Robot:
         self.node.get_logger().debug(f"{RED}{BOLD}Shutting down {self.class_name}...{RESET}")
         self.camera.on_shutdown()
 
-    def get_pose(self):
+    def get_pose(self, datatype='matrix'):
         try:
             now = rclpy.time.Time()
             transform = self.tf_buffer.lookup_transform(self.parent_frame, self.child_frame, now)
-            return transform_to_matrix(transform)
+            
+            match datatype:
+                case 'matrix':
+                    return transform_to_matrix(transform)
+                case 'tf2':
+                    return transform
+                case _:
+                    self.node.get_logger().warn(f"Unknown datatype '{datatype}' requested.")
+                    return None
         except Exception as e:
             self.node.get_logger().warn(f"Transform not available: {e}")
             return None
+        
+    def get_openfusion_input(self):
+        pose = self.get_pose(datatype='tf2')
+        rgb = self.camera.get_rgb()
+        depth = self.camera.get_depth()
+
+        # Check if any of the images or pose are None
+        if pose is None or rgb is None or depth is None:
+            reason = (
+                "pose" if pose is None else
+                "RGB" if rgb is None else
+                "depth"
+            )
+            self.node.get_logger().warn(f"Skipping frame: {reason} is None.")
+            return None
+
+        # Extract timestamps
+        rgb_time = convert_stamp_to_sec(self.camera.rgb_sensor_msg.header.stamp)
+        depth_time = convert_stamp_to_sec(self.camera.depth_sensor_msg.header.stamp)
+        pose_time =convert_stamp_to_sec(pose.header.stamp)
+
+        # Check if the timestamps are synchronized
+        max_diff = max(
+            abs(rgb_time - depth_time),
+            abs(rgb_time - pose_time),
+            abs(depth_time - pose_time)
+        )
+
+        if max_diff > self.max_delta_time:
+            self.node.get_logger().warn(f"Timestamps not synchronized (Δ={max_diff:.3f}s). Skipping frame.")
+            return None
+
+        converted_pose = transform_to_matrix(pose)
+        converted_rgb = ros_image_2_opencv(rgb, 'bgr8', self.node.get_logger())
+        converted_depth = ros_image_2_opencv(depth, 'passthrough', self.node.get_logger())
+        return converted_pose, converted_rgb, converted_depth
 
     def publish_pose(self):
-        pose_matrix = self.get_pose()
+        pose_matrix = self.get_pose(datatype='matrix')
         if pose_matrix is None:
             return
 

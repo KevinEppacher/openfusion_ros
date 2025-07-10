@@ -1,10 +1,27 @@
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from tf_transformations import translation_from_matrix, quaternion_from_matrix
+from sensor_msgs.msg import CameraInfo
+import numpy as np
 
 from openfusion_ros.utils import BLUE, RED, YELLOW, BOLD, RESET, RED
 from openfusion_ros.utils.conversions import transform_to_matrix
 from openfusion_ros.utils.opencv import show_ros_image, show_ros_depth_image
+
+class CamInfo:
+    def __init__(self, cam_info_msg: CameraInfo = None):
+        self.cam_info_msg = cam_info_msg
+
+    def get_intrinsics(self):
+        if not self.cam_info_msg:
+            return None
+        return np.array(self.cam_info_msg.k, dtype=np.float64).reshape(3, 3)
+
+    def get_size(self):
+        if not self.cam_info_msg:
+            return (0, 0)
+        return self.cam_info_msg.width, self.cam_info_msg.height
+
 
 class Camera:
     def __init__(self, node):
@@ -18,6 +35,9 @@ class Camera:
         self.rgb_topic = None
         self.depth_topic = None
         self.debug_images = False
+        self.camera_infos = None
+        self.rgb_sensor_msg = None
+        self.depth_sensor_msg = None
 
     def on_configure(self):
         self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
@@ -64,9 +84,18 @@ class Camera:
         self.on_cleanup() 
 
     def rgb_callback(self, msg: Image):
+        self.rgb_sensor_msg = msg
         if self.debug_images:
             show_ros_image(msg, "RGB Image")
+        
 
     def depth_callback(self, msg: Image):
+        self.depth_sensor_msg = msg
         if self.debug_images:
             show_ros_depth_image(msg, "Depth Image")
+
+    def get_rgb(self):
+        return self.rgb_sensor_msg
+    
+    def get_depth(self):
+        return self.depth_sensor_msg

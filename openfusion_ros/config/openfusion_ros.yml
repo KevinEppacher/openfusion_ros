@@ -15,3 +15,4 @@ openfusion_ros:
       depth_max: 10.0
       logging.enabled: true # Enable logging
       logging.log_file: "openfusion.log"
+      max_delta_time: 0.2 # Maximum time delta for pose updates
