@@ -22,6 +22,8 @@ class Robot:
         self.pose_timer = None
         self.publish_interval = 0.01  # seconds
 
+        self.prev_pose = None
+
     def on_configure(self):
         self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
 
