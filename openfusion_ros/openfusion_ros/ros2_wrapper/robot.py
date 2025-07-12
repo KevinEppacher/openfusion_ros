@@ -2,6 +2,7 @@ import rclpy
 from tf2_ros import Buffer, TransformListener
 from geometry_msgs.msg import PoseStamped
 from tf_transformations import translation_from_matrix, quaternion_from_matrix
+from rclpy.duration import Duration
 
 from openfusion_ros.utils import BLUE, RED, YELLOW, BOLD, RESET, RED
 from openfusion_ros.utils.conversions import transform_to_matrix, convert_stamp_to_sec
@@ -23,6 +24,10 @@ class Robot:
         self.publish_interval = 0.01  # seconds
 
         self.prev_pose = None
+        self.transform = None
+
+        # Test 
+        self.last_publish_time = None
 
     def on_configure(self):
         self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
@@ -70,27 +75,37 @@ class Robot:
         self.node.get_logger().debug(f"{RED}{BOLD}Shutting down {self.class_name}...{RESET}")
         self.camera.on_shutdown()
 
-    def get_pose(self, datatype='matrix'):
+    def update_pose(self, pose):
         try:
             now = rclpy.time.Time()
-            transform = self.tf_buffer.lookup_transform(self.parent_frame, self.child_frame, now)
-            
-            match datatype:
-                case 'matrix':
-                    return transform_to_matrix(transform)
-                case 'tf2':
-                    return transform
-                case _:
-                    self.node.get_logger().warn(f"Unknown datatype '{datatype}' requested.")
-                    return None
+            rgb = self.camera.get_rgb(which="oldest")
+            time_target = rclpy.time.Time.from_msg(rgb.header.stamp)
+            self.transform = self.tf_buffer.lookup_transform(self.parent_frame, self.child_frame, time_target)
+
         except Exception as e:
             self.node.get_logger().warn(f"Transform not available: {e}")
             return None
+
+    def get_pose(self, datatype='matrix'):
+        self.update_pose(self.current_pose)
+        transform = self.transform
+        if transform is None:
+            self.node.get_logger().warn("Transform is None. Cannot get pose.")
+            return None
+                
+        match datatype:
+            case 'matrix':
+                return transform_to_matrix(transform)
+            case 'tf2':
+                return transform
+            case _:
+                self.node.get_logger().warn(f"Unknown datatype '{datatype}' requested.")
+                return None
         
     def get_openfusion_input(self):
         pose = self.get_pose(datatype='tf2')
-        rgb = self.camera.get_rgb()
-        depth = self.camera.get_depth()
+        rgb = self.camera.get_rgb(which='oldest')
+        depth = self.camera.get_depth(which='oldest')
 
         # Check if any of the images or pose are None
         if pose is None or rgb is None or depth is None:
@@ -103,8 +118,8 @@ class Robot:
             return None
 
         # Extract timestamps
-        rgb_time = convert_stamp_to_sec(self.camera.rgb_sensor_msg.header.stamp)
-        depth_time = convert_stamp_to_sec(self.camera.depth_sensor_msg.header.stamp)
+        rgb_time = convert_stamp_to_sec(rgb.header.stamp)
+        depth_time = convert_stamp_to_sec(depth.header.stamp)
         pose_time =convert_stamp_to_sec(pose.header.stamp)
 
         # Check if the timestamps are synchronized
@@ -124,6 +139,17 @@ class Robot:
         return converted_pose, converted_rgb, converted_depth
 
     def publish_pose(self):
+        now = self.node.get_clock().now()
+
+        # Timing prüfen
+        if self.last_publish_time:
+            elapsed = (now.nanoseconds - self.last_publish_time.nanoseconds) * 1e-9
+            if elapsed > self.publish_interval * 1.5:
+                self.node.get_logger().warn(
+                    f"{RED}{BOLD}Pose publishing delay: expected {self.publish_interval:.3f}s, actual {elapsed:.3f}s{RESET}"
+                )
+
+        # Pose holen
         pose_matrix = self.get_pose(datatype='matrix')
         if pose_matrix is None:
             return
@@ -132,7 +158,7 @@ class Robot:
         quaternion = quaternion_from_matrix(pose_matrix)
 
         msg = PoseStamped()
-        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.stamp = now.to_msg()
         msg.header.frame_id = self.parent_frame
         msg.pose.position.x = translation[0]
         msg.pose.position.y = translation[1]
@@ -143,3 +169,4 @@ class Robot:
         msg.pose.orientation.w = quaternion[3]
 
         self.pose_pub.publish(msg)
+        self.last_publish_time = now

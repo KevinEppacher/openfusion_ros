@@ -36,8 +36,8 @@ class VLMBaseLifecycleNode(LifecycleNode):
         try:
             if self.robot:
                 self.robot.on_activate()
-            self._pcl_timer = self.create_timer(1.0, self.pcl_timer_callback)
-            self._append_pose_timer = self.create_timer(0.1, self.append_pose_timer_callback)
+            self._pcl_timer = self.create_timer(0.1, self.pcl_timer_callback)
+            self._append_pose_timer = self.create_timer(1.0, self.append_pose_timer_callback)
         except Exception as e:
             self.get_logger().error(f"{RED}[{self.get_name()}] Activation failed: {e}{RESET}")
             return TransitionCallbackReturn.FAILURE
