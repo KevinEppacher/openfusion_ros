@@ -1,11 +1,14 @@
 import rclpy
-from rclpy.lifecycle import TransitionCallbackReturn, LifecyclePublisher
+from rclpy.lifecycle import TransitionCallbackReturn
 from rclpy.lifecycle import State
 from sensor_msgs.msg import CameraInfo, PointCloud2, PointField
 from std_msgs.msg import Header
 import sensor_msgs_py.point_cloud2 as pc2
 import numpy as np
 from rosgraph_msgs.msg import Clock
+from geometry_msgs.msg import PoseArray, Pose
+import tf_transformations
+
 
 from vlm_base.vlm_base import VLMBaseLifecycleNode
 from openfusion_ros.utils import BLUE, RED, YELLOW, GREEN, BOLD, RESET
@@ -20,21 +23,40 @@ class OpenFusionNode(VLMBaseLifecycleNode):
     def __init__(self):
         super().__init__('openfusion_node')
         self.camera_info = CamInfo()
-        self.camera_info_sub = self.create_subscription(CameraInfo, '/camera_info', self.camera_info_callback, 10)
+        
+        # Publishers
+        self.pose_pub = None  # Publisher for PoseArray
         self.pc_pub = None  # LifecyclePublisher for PointCloud2
         self.semantic_pc_pub = None  # Publisher for semantic pointcloud
+
+        # Subcribers
+        self.camera_info_sub = self.create_subscription(CameraInfo, '/camera_info', self.camera_info_callback, 10)
         self.clock_sub = None
+
+        # Class member variables
         self.latest_clock = None
+        self.pose_array = None
 
     def on_configure(self, state: State):
         result = super().on_configure(state)
         if result != TransitionCallbackReturn.SUCCESS:
             return result
 
-        # Create LifecyclePublisher
+        # Declare parameters
+        if not self.has_parameter("parent_frame"):  
+            self.declare_parameter("parent_frame", "map")
+
+        # Get parameter values
+        self.parent_frame = self.get_parameter("parent_frame").get_parameter_value().string_value
+
+        # Create Publishers
         self.pc_pub = self.create_publisher(PointCloud2, "pointcloud", 10)
         self.semantic_pc_pub = self.create_publisher(PointCloud2,'semantic_pointcloud',10)
+        self.pose_pub = self.create_publisher(PoseArray, 'pose_array', 10)
+
+        # Create Subscribers
         self.clock_sub = self.create_subscription(Clock, '/clock', self.clock_callback, 10)
+        
         self.get_logger().info(f"{GREEN}[{self.get_name()}] PointCloud LifecyclePublisher created.{RESET}")
 
         return TransitionCallbackReturn.SUCCESS
@@ -60,7 +82,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
     def load_robot(self):
         self.robot = Robot(self)
         return self.robot
-
+    
     def load_model(self):
         if not self.robot:
             self.get_logger().error(f"{RED}Robot is not initialized. Cannot load model.{RESET}")
@@ -119,6 +141,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         points, colors = self.model.point_state.get_pc()
         self.publish_pointcloud(points, colors)
+        self.publish_pose_array()
 
         self.process_semantic_query()
 
@@ -212,3 +235,23 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                 self.tf_buffer.clear()
 
         self.latest_clock = current_time
+
+    def publish_pose_array(self):
+        pose_array = PoseArray()
+        pose_array.header.stamp = self.get_timestamp()
+        pose_array.header.frame_id = self.parent_frame
+
+        for matrix in self.model.point_state.poses:
+            inverted_matrix = np.linalg.inv(matrix)
+            pose = Pose()
+            pose.position.x = inverted_matrix[0, 3]
+            pose.position.y = inverted_matrix[1, 3]
+            pose.position.z = inverted_matrix[2, 3]
+            q = tf_transformations.quaternion_from_matrix(inverted_matrix)
+            pose.orientation.x = q[0]
+            pose.orientation.y = q[1]
+            pose.orientation.z = q[2]
+            pose.orientation.w = q[3]
+            pose_array.poses.append(pose)
+
+        self.pose_pub.publish(pose_array)

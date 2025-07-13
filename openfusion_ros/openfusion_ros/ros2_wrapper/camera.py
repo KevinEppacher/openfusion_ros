@@ -45,7 +45,7 @@ class Camera:
 
         # Declare parameters for frame names
         if not self.node.has_parameter("max_buffer_size"):
-            self.node.declare_parameter("max_buffer_size", 100)
+            self.node.declare_parameter("max_buffer_size", 50)
         if not self.node.has_parameter("max_buffer_age_sec"):
             self.node.declare_parameter("max_buffer_age_sec", 2.0)
         if not self.node.has_parameter("rgb_topic"):
@@ -59,11 +59,11 @@ class Camera:
         self.rgb_topic = self.node.get_parameter("rgb_topic").get_parameter_value().string_value
         self.depth_topic = self.node.get_parameter("depth_topic").get_parameter_value().string_value
         self.debug_images = self.node.get_parameter("debug_images").get_parameter_value().bool_value
-        max_buffer_size = self.node.get_parameter("max_buffer_size").get_parameter_value().integer_value
+        self.max_buffer_size = self.node.get_parameter("max_buffer_size").get_parameter_value().integer_value
         max_buffer_age_sec = self.node.get_parameter("max_buffer_age_sec").get_parameter_value().double_value
 
-        self.rgb_buffer = deque(maxlen=max_buffer_size)
-        self.depth_buffer = deque(maxlen=max_buffer_size)
+        self.rgb_buffer = deque(maxlen=self.max_buffer_size)
+        self.depth_buffer = deque(maxlen=self.max_buffer_size)
         self.max_age = Duration(seconds=max_buffer_age_sec)
 
         self.node.get_logger().debug(f"{BLUE}{BOLD}Finished configuring {self.class_name}{RESET}")
@@ -111,6 +111,7 @@ class Camera:
     def depth_callback(self, msg: Image):
         self._prune_old(self.depth_buffer)
         self.depth_buffer.append(msg)
+
         if self.debug_images:
             image = self.depth_buffer[0] if len(self.depth_buffer) > 0 else msg
             show_ros_depth_image(image, "Depth Image")
@@ -140,4 +141,3 @@ class Camera:
                 if abs(rgb_time - depth_time) < tolerance_sec:
                     return rgb, depth
         return None, None
-        
