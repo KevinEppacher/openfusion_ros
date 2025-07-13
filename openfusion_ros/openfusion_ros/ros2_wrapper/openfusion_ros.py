@@ -8,7 +8,7 @@ import numpy as np
 from rosgraph_msgs.msg import Clock
 from geometry_msgs.msg import PoseArray, Pose
 import tf_transformations
-
+from scipy.spatial.transform import Rotation as R
 
 from vlm_base.vlm_base import VLMBaseLifecycleNode
 from openfusion_ros.utils import BLUE, RED, YELLOW, GREEN, BOLD, RESET
@@ -45,9 +45,15 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         # Declare parameters
         if not self.has_parameter("parent_frame"):  
             self.declare_parameter("parent_frame", "map")
+        if not self.has_parameter("pose_min_translation"):
+            self.declare_parameter("pose_min_translation", 0.05)
+        if not self.has_parameter("pose_min_rotation"):
+            self.declare_parameter("pose_min_rotation", 5.0)
 
         # Get parameter values
         self.parent_frame = self.get_parameter("parent_frame").get_parameter_value().string_value
+        self.pose_min_translation = self.get_parameter("pose_min_translation").get_parameter_value().double_value
+        self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
 
         # Create Publishers
         self.pc_pub = self.create_publisher(PointCloud2, "pointcloud", 10)
@@ -153,6 +159,13 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         pose, rgb, depth = result
         T_camera_map = np.linalg.inv(pose)
 
+        # Check if the new pose is significantly different from all existing
+        if not self.is_pose_significantly_different_from_all(T_camera_map, self.model.point_state.poses,
+                                                        trans_diff_threshold=self.pose_min_translation,
+                                                        fov_deg=self.camera_info.get_horizontal_fov_deg()):
+            self.get_logger().debug(f"{YELLOW}[{self.get_name()}] Pose not significantly different. Skipping update.{RESET}")
+            return
+
         self.model.io.update(rgb, depth, T_camera_map)
         self.model.vo()
         self.model.compute_state(encode_image=True)
@@ -255,3 +268,27 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             pose_array.poses.append(pose)
 
         self.pose_pub.publish(pose_array)
+
+    def is_pose_significantly_different_from_all(self, new_pose, poses, trans_diff_threshold=0.05, fov_deg=70.0):
+        """
+        Check if new_pose is significantly different from all poses in the list.
+        Rotation is compared against half of the FOV (i.e., cone angle).
+        """
+        if not poses or len(poses) == 0:
+            return True
+
+        half_fov_deg = fov_deg / 2.0
+
+        for existing_pose in poses:
+            trans_diff = np.linalg.norm(new_pose[:3, 3] - existing_pose[:3, 3])
+
+            r1 = R.from_matrix(existing_pose[:3, :3])
+            r2 = R.from_matrix(new_pose[:3, :3])
+            delta_r = r1.inv() * r2
+            angle_deg = np.degrees(np.abs(delta_r.magnitude()))
+            self.get_logger().info(f"Δtrans = {trans_diff:.4f}, Δrot = {angle_deg:.2f}")
+
+            if trans_diff < trans_diff_threshold and angle_deg < half_fov_deg:
+                return False
+
+        return True

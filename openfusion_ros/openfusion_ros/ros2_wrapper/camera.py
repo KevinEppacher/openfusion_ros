@@ -23,7 +23,15 @@ class CamInfo:
         if not self.cam_info_msg:
             return (0, 0)
         return self.cam_info_msg.width, self.cam_info_msg.height
-
+    
+    def get_horizontal_fov_deg(self):
+        """Estimate horizontal field of view in degrees."""
+        if not self.cam_info_msg:
+            return 70.0  # fallback
+        fx = self.cam_info_msg.k[0]
+        width = self.cam_info_msg.width
+        fov_rad = 2 * np.arctan2(width, 2 * fx)
+        return np.degrees(fov_rad)
 
 class Camera:
     def __init__(self, node):
