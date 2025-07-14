@@ -17,7 +17,7 @@ from openfusion_ros.ros2_wrapper.camera import CamInfo
 from openfusion_ros.slam import build_slam, BaseSLAM
 from openfusion_ros.utils.utils import prepare_openfusion_input
 from openfusion_ros.utils.conversions import convert_stamp_to_sec
-
+from multimodal_query_msgs.msg import SemanticPrompt
 
 class OpenFusionNode(VLMBaseLifecycleNode):
     def __init__(self):
@@ -36,6 +36,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         # Class member variables
         self.latest_clock = None
         self.pose_array = None
+        self.semantic_input = None
 
     def on_configure(self, state: State):
         result = super().on_configure(state)
@@ -62,7 +63,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         # Create Subscribers
         self.clock_sub = self.create_subscription(Clock, '/clock', self.clock_callback, 10)
-        
+        self.prompt_sub = self.create_subscription(SemanticPrompt, '/user_prompt', self.semantic_prompt_callback, 10)
+
         self.get_logger().info(f"{GREEN}[{self.get_name()}] PointCloud LifecyclePublisher created.{RESET}")
 
         return TransitionCallbackReturn.SUCCESS
@@ -159,10 +161,12 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         pose, rgb, depth = result
         T_camera_map = np.linalg.inv(pose)
 
+        fov_angle = self.camera_info.get_horizontal_fov_deg() / 3.0
+
         # Check if the new pose is significantly different from all existing
         if not self.is_pose_significantly_different_from_all(T_camera_map, self.model.point_state.poses,
                                                         trans_diff_threshold=self.pose_min_translation,
-                                                        fov_deg=self.camera_info.get_horizontal_fov_deg()):
+                                                        fov_deg=fov_angle):
             self.get_logger().debug(f"{YELLOW}[{self.get_name()}] Pose not significantly different. Skipping update.{RESET}")
             return
 
@@ -175,7 +179,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         try:
             if isinstance(self.model, BaseSLAM) and hasattr(self.model, "query"):
                 query_points, scores = self.model.query(
-                    "chair", topk=10, only_poi=True
+                    self.semantic_input.text_query, topk=10, only_poi=True
                 )
 
                 if query_points is not None and len(query_points) > 0:
@@ -286,9 +290,15 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             r2 = R.from_matrix(new_pose[:3, :3])
             delta_r = r1.inv() * r2
             angle_deg = np.degrees(np.abs(delta_r.magnitude()))
-            self.get_logger().info(f"Δtrans = {trans_diff:.4f}, Δrot = {angle_deg:.2f}")
 
             if trans_diff < trans_diff_threshold and angle_deg < half_fov_deg:
                 return False
 
         return True
+
+    def semantic_prompt_callback(self, msg: SemanticPrompt):
+        self.get_logger().info(f"{BLUE}{BOLD} Received text prompt: {msg.text_query} {RESET}")
+        self.semantic_input = msg
+
+        # Process the semantic query
+        self.process_semantic_query()
