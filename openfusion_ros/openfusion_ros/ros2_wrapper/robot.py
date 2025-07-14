@@ -26,9 +26,6 @@ class Robot:
         self.prev_pose = None
         self.transform = None
 
-        # Test 
-        self.last_publish_time = None
-
     def on_configure(self):
         self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
 
@@ -140,14 +137,6 @@ class Robot:
 
     def publish_pose(self):
         now = self.node.get_clock().now()
-
-        # # Timing prüfen
-        # if self.last_publish_time:
-        #     elapsed = (now.nanoseconds - self.last_publish_time.nanoseconds) * 1e-9
-        #     if elapsed > self.publish_interval * 1.5:
-        #         self.node.get_logger().warn(
-        #             f"{RED}{BOLD}Pose publishing delay: expected {self.publish_interval:.3f}s, actual {elapsed:.3f}s{RESET}"
-        #         )
 
         pose_matrix = self.get_pose(datatype='matrix')
         if pose_matrix is None:

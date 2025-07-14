@@ -10,7 +10,7 @@ openfusion_ros:
       rgb_topic: "rgb"
       depth_topic: "depth"
       pose_topic: "robot_pose" # The topic to publish the robot's pose
-      debug_images: true # Enable debug images
+      debug_images: false # Enable debug images
       topk: 10
       depth_max: 10.0
       logging.enabled: true # Enable logging

@@ -23,7 +23,11 @@ class OpenFusionNode(VLMBaseLifecycleNode):
     def __init__(self):
         super().__init__('openfusion_node')
         self.camera_info = CamInfo()
-        
+
+        # Timers
+        self._pcl_timer = None
+        self._append_pose_timer = None
+
         # Publishers
         self.pose_pub = None  # Publisher for PoseArray
         self.pc_pub = None  # LifecyclePublisher for PointCloud2
@@ -74,16 +78,24 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         if result != TransitionCallbackReturn.SUCCESS:
             return result
 
-        if self.pc_pub:
-            self.pc_pub.on_activate()
-            self.get_logger().info(f"{GREEN}[{self.get_name()}] PointCloud publisher activated.{RESET}")
+        self._pcl_timer = self.create_timer(0.1, self.pcl_timer_callback)
+        self._append_pose_timer = self.create_timer(1.0, self.append_pose_timer_callback)
+        self.get_logger().info(f"{GREEN}[{self.get_name()}] Timers started.{RESET}")
 
         return TransitionCallbackReturn.SUCCESS
+
 
     def on_deactivate(self, state: State):
         if self.pc_pub:
             self.pc_pub.on_deactivate()
             self.get_logger().info(f"{YELLOW}[{self.get_name()}] PointCloud publisher deactivated.{RESET}")
+
+        if self._pcl_timer:
+            self._pcl_timer.cancel()
+            self._pcl_timer = None
+        if self._append_pose_timer:
+            self._append_pose_timer.cancel()
+            self._append_pose_timer = None
 
         return super().on_deactivate(state)
 

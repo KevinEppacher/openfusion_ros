@@ -5,9 +5,8 @@ class VLMBaseLifecycleNode(LifecycleNode):
     def __init__(self, node_name):
         super().__init__(node_name)
         self.get_logger().info(f"{BLUE}{BOLD}[{node_name}] Initializing lifecycle node...{RESET}")
-        self._pcl_timer = None
-        self._append_pose_timer = None
         self.robot = None
+        self.model = None
 
     def on_configure(self, state: State):
         self.get_logger().info(f"{YELLOW}{BOLD}[{self.get_name()}] Configuring...{RESET}")
@@ -36,8 +35,6 @@ class VLMBaseLifecycleNode(LifecycleNode):
         try:
             if self.robot:
                 self.robot.on_activate()
-            self._pcl_timer = self.create_timer(0.1, self.pcl_timer_callback)
-            self._append_pose_timer = self.create_timer(1.0, self.append_pose_timer_callback)
         except Exception as e:
             self.get_logger().error(f"{RED}[{self.get_name()}] Activation failed: {e}{RESET}")
             return TransitionCallbackReturn.FAILURE
@@ -47,12 +44,6 @@ class VLMBaseLifecycleNode(LifecycleNode):
 
     def on_deactivate(self, state: State):
         self.get_logger().info(f"{YELLOW}[{self.get_name()}] Deactivating...{RESET}")
-        if self._pcl_timer:
-            self._pcl_timer.cancel()
-            self._pcl_timer = None
-        if self._append_pose_timer:
-            self._append_pose_timer.cancel()
-            self._append_pose_timer = None
         if self.robot:
             self.robot.on_deactivate()
         self.get_logger().info(f"{BLUE}[{self.get_name()}] Deactivated.{RESET}")
