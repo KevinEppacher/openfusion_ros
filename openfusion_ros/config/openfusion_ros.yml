@@ -1,22 +1,22 @@
 openfusion_ros:
   openfusion_ros:
     ros__parameters:
-      append_poses_frequency: 10.0  # Frequency at which to append poses to the map
-      pointcloud_frequency: 1.0 # Frequency at which to publish pointclouds
-      pose_min_translation: 0.05  # Minimum translation to consider a new pose
-      pose_min_rotation: 5.0  # Minimum rotation to consider a new pose
-      parent_frame: "map" # The frame in which the map is defined
-      child_frame: "camera" # The frame in which the camera is defined
-      rgb_topic: "/rgb"
-      depth_topic: "/depth"
-      pose_topic: "robot_pose" # The topic to publish the robot's pose
-      debug_images: false # Enable debug images
+      robot:
+        parent_frame: "map"
+        child_frame: "camera"
+        pose_topic: "robot_pose"
+        max_delta_time: 0.2
+        camera:
+          rgb_topic: "/rgb"
+          depth_topic: "/depth"
+          debug_images: false
+          max_buffer_size: 50
+          max_buffer_age_sec: 3.0
+      append_poses_frequency: 10.0
+      pointcloud_frequency: 1.0
+      pose_min_translation: 0.05
+      pose_min_rotation: 5.0
       topk: 20
       depth_max: 10.0
-      logging.enabled: true # Enable logging
-      logging.log_file: "openfusion.log"
-      max_delta_time: 0.2 # Maximum time delta for pose updates
-      use_sim_time: true # Use simulated time if true
-      max_buffer_size: 50
-      max_buffer_age_sec: 3.0
+      use_sim_time: true
       skip_loading_model: false

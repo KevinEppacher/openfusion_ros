@@ -25,7 +25,6 @@ class CamInfo:
         return self.cam_info_msg.width, self.cam_info_msg.height
     
     def get_horizontal_fov_deg(self):
-        """Estimate horizontal field of view in degrees."""
         if not self.cam_info_msg:
             return 70.0  # fallback
         fx = self.cam_info_msg.k[0]
@@ -52,23 +51,23 @@ class Camera:
         self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
 
         # Declare parameters for frame names
-        if not self.node.has_parameter("max_buffer_size"):
-            self.node.declare_parameter("max_buffer_size", 50)
-        if not self.node.has_parameter("max_buffer_age_sec"):
-            self.node.declare_parameter("max_buffer_age_sec", 2.0)
-        if not self.node.has_parameter("rgb_topic"):
-            self.node.declare_parameter("rgb_topic", "/rgb")
-        if not self.node.has_parameter("depth_topic"):
-            self.node.declare_parameter("depth_topic", "/depth")
-        if not self.node.has_parameter("debug_images"):
-            self.node.declare_parameter("debug_images", False)
+        if not self.node.has_parameter("robot.camera.max_buffer_size"):
+            self.node.declare_parameter("robot.camera.max_buffer_size", 50)
+        if not self.node.has_parameter("robot.camera.max_buffer_age_sec"):
+            self.node.declare_parameter("robot.camera.max_buffer_age_sec", 2.0)
+        if not self.node.has_parameter("robot.camera.rgb_topic"):
+            self.node.declare_parameter("robot.camera.rgb_topic", "/rgb")
+        if not self.node.has_parameter("robot.camera.depth_topic"):
+            self.node.declare_parameter("robot.camera.depth_topic", "/depth")
+        if not self.node.has_parameter("robot.camera.debug_images"):
+            self.node.declare_parameter("robot.camera.debug_images", False)
 
         # Get parameter values
-        self.rgb_topic = self.node.get_parameter("rgb_topic").get_parameter_value().string_value
-        self.depth_topic = self.node.get_parameter("depth_topic").get_parameter_value().string_value
-        self.debug_images = self.node.get_parameter("debug_images").get_parameter_value().bool_value
-        self.max_buffer_size = self.node.get_parameter("max_buffer_size").get_parameter_value().integer_value
-        max_buffer_age_sec = self.node.get_parameter("max_buffer_age_sec").get_parameter_value().double_value
+        self.rgb_topic = self.node.get_parameter("robot.camera.rgb_topic").get_parameter_value().string_value
+        self.depth_topic = self.node.get_parameter("robot.camera.depth_topic").get_parameter_value().string_value
+        self.debug_images = self.node.get_parameter("robot.camera.debug_images").get_parameter_value().bool_value
+        self.max_buffer_size = self.node.get_parameter("robot.camera.max_buffer_size").get_parameter_value().integer_value
+        max_buffer_age_sec = self.node.get_parameter("robot.camera.max_buffer_age_sec").get_parameter_value().double_value
 
         self.rgb_buffer = deque(maxlen=self.max_buffer_size)
         self.depth_buffer = deque(maxlen=self.max_buffer_size)

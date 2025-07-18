@@ -45,8 +45,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
     def on_configure(self, state: State):
         # Declare parameters
-        if not self.has_parameter("parent_frame"):  
-            self.declare_parameter("parent_frame", "map")
+        if not self.has_parameter("robot.parent_frame"):  
+            self.declare_parameter("robot.parent_frame", "map")
         if not self.has_parameter("pose_min_translation"):
             self.declare_parameter("pose_min_translation", 0.05)
         if not self.has_parameter("pose_min_rotation"):
@@ -57,7 +57,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             self.declare_parameter("skip_loading_model", False)
 
         # Get parameter values
-        self.parent_frame = self.get_parameter("parent_frame").get_parameter_value().string_value
+        self.parent_frame = self.get_parameter("robot.parent_frame").get_parameter_value().string_value
         self.pose_min_translation = self.get_parameter("pose_min_translation").get_parameter_value().double_value
         self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
         self.topk = self.get_parameter("topk").get_parameter_value().integer_value
@@ -81,8 +81,6 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.prompt_sub = self.create_subscription(SemanticPrompt, '/user_prompt', self.semantic_prompt_callback, 10)
 
         # self.print_all_parameters()
-
-        self.get_logger().info(f"{GREEN}[{self.get_name()}] PointCloud LifecyclePublisher created.{RESET}")
 
         return TransitionCallbackReturn.SUCCESS
 
@@ -295,7 +293,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.semantic_pc_pub.publish(pc2_msg)
 
     def get_timestamp(self):
-        return self.latest_clock if self.latest_clock is not None else self.get_clock().now().to_msg()
+        return rclpy.time.Time().to_msg()
 
     def clock_callback(self, msg: Clock):
         current_time = msg.clock
