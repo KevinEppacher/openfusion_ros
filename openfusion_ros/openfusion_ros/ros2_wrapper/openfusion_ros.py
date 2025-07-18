@@ -39,7 +39,6 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.clock_sub = None
 
         # Class member variables
-        self.latest_clock = None
         self.pose_array = None
         self.semantic_input = None
 
@@ -77,7 +76,6 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.pose_pub = self.create_publisher(PoseArray, 'pose_array', 10)
 
         # Create Subscribers
-        self.clock_sub = self.create_subscription(Clock, '/clock', self.clock_callback, 10)
         self.prompt_sub = self.create_subscription(SemanticPrompt, '/user_prompt', self.semantic_prompt_callback, 10)
 
         # self.print_all_parameters()
@@ -116,11 +114,10 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.pc_pub = None  # LifecyclePublisher for PointCloud2
         self.semantic_pc_pub = None  # Publisher for semantic pointcloud
 
-        # Subcribers
-        self.clock_sub = None
+        # Subscribers
+        self.prompt_sub = None
 
         # Class member variables
-        self.latest_clock = None
         self.pose_array = None
         self.semantic_input = None
         self.skip_loading_model = False
@@ -294,17 +291,6 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
     def get_timestamp(self):
         return rclpy.time.Time().to_msg()
-
-    def clock_callback(self, msg: Clock):
-        current_time = msg.clock
-        if self.latest_clock:
-            prev = convert_stamp_to_sec(self.latest_clock)
-            curr = convert_stamp_to_sec(current_time)
-            if curr < prev:
-                self.get_logger().warn("Detected rosbag loop! Clearing TF buffer.")
-                self.tf_buffer.clear()
-
-        self.latest_clock = current_time
 
     def publish_pose_array(self):
         pose_array = PoseArray()
