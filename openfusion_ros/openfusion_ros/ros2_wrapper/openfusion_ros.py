@@ -234,7 +234,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
                 if query_points is not None and len(query_points) > 0:
                     query_colors = self.map_scores_to_colors(query_points, scores)
-                    self.publish_semantic_pointcloud(query_points, query_colors)
+                    self.publish_semantic_pointcloud(query_points, query_colors, scores)
                 else:
                     self.get_logger().warn(f"Semantic query '{self.semantic_input.text_query}' returned no points.")
         except Exception as e:
@@ -263,23 +263,26 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         return np.stack([red_channel, green_channel, blue_channel], axis=1)
     
-    def publish_semantic_pointcloud(self, points, colors):
+    def publish_semantic_pointcloud(self, points, colors, scores):
         if points is None or len(points) == 0:
             self.get_logger().warn("No semantic points to publish")
             return
 
+        # Convert RGB from float [0, 1] to uint8 [0, 255] and pack into single uint32
         colors_uint8 = (np.clip(colors, 0, 1) * 255).astype(np.uint8)
         rgb_uint32 = (colors_uint8[:, 0].astype(np.uint32) << 16 |
                     colors_uint8[:, 1].astype(np.uint32) << 8 |
                     colors_uint8[:, 2].astype(np.uint32))
 
-        cloud = [(x, y, z, rgb) for (x, y, z), rgb in zip(points, rgb_uint32)]
+        # Create combined point data (x, y, z, rgb, intensity)
+        cloud = [(x, y, z, rgb, i) for (x, y, z), rgb, i in zip(points, rgb_uint32, scores)]
 
         fields = [
             PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
             PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
             PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name='rgb', offset=12, datatype=PointField.UINT32, count=1)
+            PointField(name='rgb', offset=12, datatype=PointField.UINT32, count=1),
+            PointField(name='intensity', offset=16, datatype=PointField.FLOAT32, count=1)
         ]
 
         header = Header()
