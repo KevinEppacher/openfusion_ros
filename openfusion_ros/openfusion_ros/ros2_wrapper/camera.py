@@ -57,9 +57,9 @@ class Camera:
         if not self.node.has_parameter("max_buffer_age_sec"):
             self.node.declare_parameter("max_buffer_age_sec", 2.0)
         if not self.node.has_parameter("rgb_topic"):
-            self.node.declare_parameter("rgb_topic", "rgb")
+            self.node.declare_parameter("rgb_topic", "/rgb")
         if not self.node.has_parameter("depth_topic"):
-            self.node.declare_parameter("depth_topic", "depth")
+            self.node.declare_parameter("depth_topic", "/depth")
         if not self.node.has_parameter("debug_images"):
             self.node.declare_parameter("debug_images", False)
 
@@ -81,8 +81,8 @@ class Camera:
         self.node.get_logger().debug(f"{YELLOW}{BOLD}Activating {self.class_name}...{RESET}")
 
         # Subscribers
-        self.rgb_sub = self.node.create_subscription(Image, '/rgb', self.rgb_callback, 10)
-        self.depth_sub = self.node.create_subscription(Image, '/depth', self.depth_callback, 10)
+        self.rgb_sub = self.node.create_subscription(Image, self.rgb_topic, self.rgb_callback, 10)
+        self.depth_sub = self.node.create_subscription(Image, self.depth_topic, self.depth_callback, 10)
 
         self.node.get_logger().debug(f"{BLUE}{self.class_name} activated.{RESET}")
 

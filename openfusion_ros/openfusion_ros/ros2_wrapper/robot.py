@@ -29,10 +29,14 @@ class Robot:
     def on_configure(self):
         self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
 
-        self.node.declare_parameter("parent_frame", "map")
-        self.node.declare_parameter("child_frame", "camera")
-        self.node.declare_parameter("pose_topic", "robot_pose")
-        self.node.declare_parameter("max_delta_time", 0.01)
+        if not self.node.has_parameter("parent_frame"):
+            self.node.declare_parameter("parent_frame", "map")
+        if not self.node.has_parameter("child_frame"):
+            self.node.declare_parameter("child_frame", "camera")
+        if not self.node.has_parameter("pose_topic"):
+            self.node.declare_parameter("pose_topic", "robot_pose")
+        if not self.node.has_parameter("max_delta_time"):
+            self.node.declare_parameter("max_delta_time", 0.01)
 
         self.parent_frame = self.node.get_parameter("parent_frame").get_parameter_value().string_value
         self.child_frame = self.node.get_parameter("child_frame").get_parameter_value().string_value
@@ -74,9 +78,13 @@ class Robot:
 
     def update_pose(self, pose):
         try:
-            now = rclpy.time.Time()
             rgb = self.camera.get_rgb(which="oldest")
-            time_target = rclpy.time.Time.from_msg(rgb.header.stamp)
+            if not rgb == None:
+                time_target = rclpy.time.Time.from_msg(rgb.header.stamp)
+            else:
+                self.node.get_logger().warn("RGB image is None, using current time for transform lookup.")
+                time_target = rclpy.time.Time()
+
             self.transform = self.tf_buffer.lookup_transform(self.parent_frame, self.child_frame, time_target)
 
         except Exception as e:

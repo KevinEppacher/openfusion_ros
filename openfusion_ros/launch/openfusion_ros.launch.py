@@ -11,6 +11,9 @@ def generate_launch_description():
     pkg_share = FindPackageShare(package_name).find(package_name)
     param_file = os.path.join(pkg_share, 'config', 'openfusion_ros.yml')
 
+    if not os.path.exists(param_file):
+        raise FileNotFoundError(f"Parameter file {param_file} does not exist.")
+
     # Rviz configuration
     rviz_config = os.path.join(pkg_share, 'rviz', 'rviz.rviz')
 

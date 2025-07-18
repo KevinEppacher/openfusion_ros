@@ -4,9 +4,10 @@ from vlm_base import BLUE, GREEN, YELLOW, RED, BOLD, RESET
 class VLMBaseLifecycleNode(LifecycleNode):
     def __init__(self, node_name):
         super().__init__(node_name)
-        self.get_logger().info(f"{BLUE}{BOLD}[{node_name}] Initializing lifecycle node...{RESET}")
+        self.get_logger().info(f"{BLUE}{BOLD} Initializing lifecycle node...{RESET}")
         self.robot = None
         self.model = None
+        self.get_logger().info(f"{GREEN} Lifecycle node initialized.{RESET}")
 
     def on_configure(self, state: State):
         self.get_logger().info(f"{YELLOW}{BOLD}[{self.get_name()}] Configuring...{RESET}")

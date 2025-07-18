@@ -9,6 +9,7 @@ from rosgraph_msgs.msg import Clock
 from geometry_msgs.msg import PoseArray, Pose
 import tf_transformations
 from scipy.spatial.transform import Rotation as R
+from rcl_interfaces.msg import SetParametersResult
 
 from vlm_base.vlm_base import VLMBaseLifecycleNode
 from openfusion_ros.utils import BLUE, RED, YELLOW, GREEN, BOLD, RESET
@@ -43,10 +44,6 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.semantic_input = None
 
     def on_configure(self, state: State):
-        result = super().on_configure(state)
-        if result != TransitionCallbackReturn.SUCCESS:
-            return result
-
         # Declare parameters
         if not self.has_parameter("parent_frame"):  
             self.declare_parameter("parent_frame", "map")
@@ -54,11 +51,25 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             self.declare_parameter("pose_min_translation", 0.05)
         if not self.has_parameter("pose_min_rotation"):
             self.declare_parameter("pose_min_rotation", 5.0)
+        if not self.has_parameter("topk"):
+            self.declare_parameter("topk", 10)
+        if not self.has_parameter("skip_loading_model"):
+            self.declare_parameter("skip_loading_model", False)
 
         # Get parameter values
         self.parent_frame = self.get_parameter("parent_frame").get_parameter_value().string_value
         self.pose_min_translation = self.get_parameter("pose_min_translation").get_parameter_value().double_value
         self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
+        self.topk = self.get_parameter("topk").get_parameter_value().integer_value
+        self.skip_loading_model = self.get_parameter("skip_loading_model").get_parameter_value().bool_value
+
+        # Call base class configure
+        result = super().on_configure(state)
+        if result != TransitionCallbackReturn.SUCCESS:
+            return result
+
+        # Add dynamic reconfigure
+        self.add_on_set_parameters_callback(self.parameter_update_callback)
 
         # Create Publishers
         self.pc_pub = self.create_publisher(PointCloud2, "pointcloud", 10)
@@ -68,6 +79,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         # Create Subscribers
         self.clock_sub = self.create_subscription(Clock, '/clock', self.clock_callback, 10)
         self.prompt_sub = self.create_subscription(SemanticPrompt, '/user_prompt', self.semantic_prompt_callback, 10)
+
+        # self.print_all_parameters()
 
         self.get_logger().info(f"{GREEN}[{self.get_name()}] PointCloud LifecyclePublisher created.{RESET}")
 
@@ -84,12 +97,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         return TransitionCallbackReturn.SUCCESS
 
-
     def on_deactivate(self, state: State):
-        if self.pc_pub:
-            self.pc_pub.on_deactivate()
-            self.get_logger().info(f"{YELLOW}[{self.get_name()}] PointCloud publisher deactivated.{RESET}")
-
         if self._pcl_timer:
             self._pcl_timer.cancel()
             self._pcl_timer = None
@@ -98,6 +106,27 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             self._append_pose_timer = None
 
         return super().on_deactivate(state)
+    
+    def on_cleanup(self, state: State):
+        self.get_logger().info(f"{BLUE}[{self.get_name()}] Cleaning up...{RESET}")
+        # Timers
+        self._pcl_timer = None
+        self._append_pose_timer = None
+
+        # Publishers
+        self.pose_pub = None  # Publisher for PoseArray
+        self.pc_pub = None  # LifecyclePublisher for PointCloud2
+        self.semantic_pc_pub = None  # Publisher for semantic pointcloud
+
+        # Subcribers
+        self.clock_sub = None
+
+        # Class member variables
+        self.latest_clock = None
+        self.pose_array = None
+        self.semantic_input = None
+        self.skip_loading_model = False
+        return super().on_cleanup(state)
 
     def load_robot(self):
         self.robot = Robot(self)
@@ -124,6 +153,10 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                                                 block_resolution=8,
                                                 block_count=20000)
 
+        if self.skip_loading_model == True:
+            self.get_logger().info(f"{YELLOW}Skipping model loading as per configuration.{RESET}")
+            return True
+        
         self.get_logger().debug(f"{YELLOW}{BOLD}Loading model...{RESET}")
         self.model = build_slam(args, camera_instrinsics, params)
         self.get_logger().debug(f"{BLUE}{BOLD}Model loaded successfully.{RESET}")
@@ -134,7 +167,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
     def publish_pointcloud(self, points, colors):
         if points is None or len(points) == 0:
-            self.get_logger().warn("No points to publish")
+            self.get_logger().warn("Not enough points to publish for pointcloud. SLAM model needs to collect more data.")
             return
 
         colors = np.clip(colors, 0, 1)
@@ -151,17 +184,25 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         ]
         header = Header()
         header.stamp = self.get_timestamp()
-        header.frame_id = "map"
+        header.frame_id = self.parent_frame
         pc2_msg = pc2.create_cloud(header, fields, cloud)
         self.pc_pub.publish(pc2_msg)
 
     def pcl_timer_callback(self):
+        if not self.model:
+            self.get_logger().warn(f"{YELLOW}Model is not loaded. Cannot publish pointcloud.{RESET}")
+            return
+        
         self.model.vo()
         self.model.compute_state(encode_image=True)
 
         points, colors = self.model.point_state.get_pc()
         self.publish_pointcloud(points, colors)
         self.publish_pose_array()
+
+        if len(self.model.point_state.poses) <= 10:
+            # self.get_logger().info(f"{YELLOW} Not enough poses to publish semantic pointcloud.{RESET}")
+            return
 
         self.process_semantic_query()
 
@@ -173,12 +214,14 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         pose, rgb, depth = result
         T_camera_map = np.linalg.inv(pose)
 
-        fov_angle = self.camera_info.get_horizontal_fov_deg() / 3.0
+        if self.model is None:
+            self.get_logger().warn(f"{YELLOW}Model is not loaded. Cannot append pose.{RESET}")
+            return
 
         # Check if the new pose is significantly different from all existing
-        if not self.is_pose_significantly_different_from_all(T_camera_map, self.model.point_state.poses,
+        if not self.is_pose_unique(T_camera_map, self.model.point_state.poses,
                                                         trans_diff_threshold=self.pose_min_translation,
-                                                        fov_deg=fov_angle):
+                                                        fov_deg=self.pose_min_rotation):
             self.get_logger().debug(f"{YELLOW}[{self.get_name()}] Pose not significantly different. Skipping update.{RESET}")
             return
 
@@ -191,7 +234,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         try:
             if isinstance(self.model, BaseSLAM) and hasattr(self.model, "query"):
                 query_points, scores = self.model.query(
-                    self.semantic_input.text_query, topk=10, only_poi=True
+                    self.semantic_input.text_query, topk=self.topk, only_poi=True
                 )
 
                 if query_points is not None and len(query_points) > 0:
@@ -246,7 +289,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         header = Header()
         header.stamp = self.get_timestamp()
-        header.frame_id = "map"
+        header.frame_id = self.parent_frame
 
         pc2_msg = pc2.create_cloud(header, fields, cloud)
         self.semantic_pc_pub.publish(pc2_msg)
@@ -270,6 +313,9 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         pose_array.header.stamp = self.get_timestamp()
         pose_array.header.frame_id = self.parent_frame
 
+        if self.model is None or not hasattr(self.model, 'point_state'):
+            return
+
         for matrix in self.model.point_state.poses:
             inverted_matrix = np.linalg.inv(matrix)
             pose = Pose()
@@ -285,7 +331,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         self.pose_pub.publish(pose_array)
 
-    def is_pose_significantly_different_from_all(self, new_pose, poses, trans_diff_threshold=0.05, fov_deg=70.0):
+    def is_pose_unique(self, new_pose, poses, trans_diff_threshold=0.05, fov_deg=70.0):
         """
         Check if new_pose is significantly different from all poses in the list.
         Rotation is compared against half of the FOV (i.e., cone angle).
@@ -314,3 +360,27 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         # Process the semantic query
         self.process_semantic_query()
+
+    def parameter_update_callback(self, params):
+        for param in params:
+            if param.name == "topk" and isinstance(param.value, int):
+                self.topk = param.value
+                self.get_logger().info(f"Dynamically updated topk to {self.topk}")
+        return SetParametersResult(successful=True)
+    
+    def print_all_parameters(self):
+        self.get_logger().info("OpenFusionNode parameters:")
+        for name in [
+            "append_poses_frequency",
+            "pointcloud_frequency",
+            "pose_min_translation",
+            "pose_min_rotation",
+            "parent_frame",
+            "child_frame",
+            "topk",
+            "depth_max",
+            "logging.enabled",
+            "logging.log_file"
+        ]:
+            value = self.get_parameter(name).value
+            self.get_logger().info(f"  {name}: {value}")
