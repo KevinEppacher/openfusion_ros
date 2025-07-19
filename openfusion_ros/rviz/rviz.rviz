@@ -87,7 +87,7 @@ Visualization Manager:
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 3
-      Size (m): 0.009999999776482582
+      Size (m): 0.02500000037252903
       Style: Flat Squares
       Topic:
         Depth: 5
@@ -129,7 +129,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /openfusion_ros/semantic_pointcloud
+        Value: /openfusion_ros/semantic_pointcloud_visualization
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
@@ -463,7 +463,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.804288387298584
+      Distance: 6.4575886726379395
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -478,10 +478,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7103985548019409
+      Pitch: 0.5753988027572632
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.846780776977539
+      Yaw: 5.221776485443115
     Saved: ~
 Window Geometry:
   Displays:

@@ -32,7 +32,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         # Publishers
         self.pose_pub = None  # Publisher for PoseArray
         self.pc_pub = None  # LifecyclePublisher for PointCloud2
-        self.semantic_pc_pub = None  # Publisher for semantic pointcloud
+        self.semantic_pc_pub_visualization = None  # Publisher for semantic pointcloud
 
         # Subcribers
         self.camera_info_sub = self.create_subscription(CameraInfo, '/camera_info', self.camera_info_callback, 10)
@@ -78,7 +78,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         # Create Publishers
         self.pc_pub = self.create_publisher(PointCloud2, "pointcloud", 10)
-        self.semantic_pc_pub = self.create_publisher(PointCloud2,'semantic_pointcloud',10)
+        self.semantic_pc_pub_visualization = self.create_publisher(PointCloud2, 'semantic_pointcloud_visualization', 10)
+        self.semantic_pc_pub_xyzi = self.create_publisher(PointCloud2, 'semantic_pointcloud_xyzi', 10)
         self.pose_pub = self.create_publisher(PoseArray, 'pose_array', 10)
 
         # Create Subscribers
@@ -118,7 +119,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         # Publishers
         self.pose_pub = None  # Publisher for PoseArray
         self.pc_pub = None  # LifecyclePublisher for PointCloud2
-        self.semantic_pc_pub = None  # Publisher for semantic pointcloud
+        self.semantic_pc_pub_visualization = None  # Publisher for semantic pointcloud
 
         # Subscribers
         self.prompt_sub = None
@@ -240,7 +241,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
                 if query_points is not None and len(query_points) > 0:
                     query_colors = self.map_scores_to_colors(query_points, scores, vmin=self.min_inferno_score, vmax=self.max_inferno_score)
-                    self.publish_semantic_pointcloud(query_points, query_colors, scores)
+                    self.publish_semantic_pointcloud_visualization(query_points, query_colors, scores)
+                    self.publish_semantic_pointcloud_xyzi(query_points, scores)
                 else:
                     self.get_logger().warn(f"Semantic query '{self.semantic_input.text_query}' returned no points.")
         except Exception as e:
@@ -269,7 +271,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         return rgb  # shape: (N, 3), values in [0.0, 1.0]
     
-    def publish_semantic_pointcloud(self, points, colors, scores):
+    def publish_semantic_pointcloud_visualization(self, points, colors, scores):
         if points is None or len(points) == 0:
             self.get_logger().warn("No semantic points to publish")
             return
@@ -296,7 +298,29 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         header.frame_id = self.parent_frame
 
         pc2_msg = pc2.create_cloud(header, fields, cloud)
-        self.semantic_pc_pub.publish(pc2_msg)
+        self.semantic_pc_pub_visualization.publish(pc2_msg)
+
+    def publish_semantic_pointcloud_xyzi(self, points, scores):
+        if points is None or len(points) == 0:
+            self.get_logger().warn("No semantic points to publish (XYZI)")
+            return
+
+        # Create (x, y, z, intensity) tuples
+        cloud = [(x, y, z, i) for (x, y, z), i in zip(points, scores)]
+
+        fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1)
+        ]
+
+        header = Header()
+        header.stamp = self.get_timestamp()
+        header.frame_id = self.parent_frame
+
+        pc2_msg = pc2.create_cloud(header, fields, cloud)
+        self.semantic_pc_pub_xyzi.publish(pc2_msg)
 
     def get_timestamp(self):
         return rclpy.time.Time().to_msg()
