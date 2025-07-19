@@ -20,3 +20,5 @@ openfusion_ros:
       depth_max: 10.0
       use_sim_time: true
       skip_loading_model: false
+      min_inferno_score: 0.2
+      max_inferno_score: 0.45

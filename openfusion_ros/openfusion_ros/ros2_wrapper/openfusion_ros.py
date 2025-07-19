@@ -17,8 +17,8 @@ from openfusion_ros.ros2_wrapper.robot import Robot
 from openfusion_ros.ros2_wrapper.camera import CamInfo
 from openfusion_ros.slam import build_slam, BaseSLAM
 from openfusion_ros.utils.utils import prepare_openfusion_input
-from openfusion_ros.utils.conversions import convert_stamp_to_sec
 from multimodal_query_msgs.msg import SemanticPrompt
+import matplotlib.pyplot as plt  # oben im File sicherstellen
 
 class OpenFusionNode(VLMBaseLifecycleNode):
     def __init__(self):
@@ -54,6 +54,10 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             self.declare_parameter("topk", 10)
         if not self.has_parameter("skip_loading_model"):
             self.declare_parameter("skip_loading_model", False)
+        if not self.has_parameter("min_inferno_score"):
+            self.declare_parameter("min_inferno_score", 0.0)
+        if not self.has_parameter("max_inferno_score"):
+            self.declare_parameter("max_inferno_score", 1.0)
 
         # Get parameter values
         self.parent_frame = self.get_parameter("robot.parent_frame").get_parameter_value().string_value
@@ -61,6 +65,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
         self.topk = self.get_parameter("topk").get_parameter_value().integer_value
         self.skip_loading_model = self.get_parameter("skip_loading_model").get_parameter_value().bool_value
+        self.min_inferno_score = self.get_parameter("min_inferno_score").get_parameter_value().double_value
+        self.max_inferno_score = self.get_parameter("max_inferno_score").get_parameter_value().double_value
 
         # Call base class configure
         result = super().on_configure(state)
@@ -233,35 +239,35 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                 )
 
                 if query_points is not None and len(query_points) > 0:
-                    query_colors = self.map_scores_to_colors(query_points, scores)
+                    query_colors = self.map_scores_to_colors(query_points, scores, vmin=self.min_inferno_score, vmax=self.max_inferno_score)
                     self.publish_semantic_pointcloud(query_points, query_colors, scores)
                 else:
                     self.get_logger().warn(f"Semantic query '{self.semantic_input.text_query}' returned no points.")
         except Exception as e:
             self.get_logger().error(f"Semantic query failed: {e}")
 
-    def map_scores_to_colors(self, query_points, scores):
-        """Converts semantic scores to red-scale RGB colors for visualization."""
-        # Default minimum score (for points without explicit score)
-        default_score = 0.2
+    def map_scores_to_colors(self, query_points, scores, vmin=0.0, vmax=1.0):
+        """Converts semantic scores to RGB colors using the inferno colormap with customizable normalization."""
+        default_score = vmin
         full_scores = np.full(query_points.shape[0], default_score, dtype=np.float32)
 
-        # Fill known scores into full_scores array
+        # Fill known scores
         if scores is not None and len(scores) <= len(full_scores):
             full_scores[:len(scores)] = scores
 
-        # Normalize scores and clamp to [0, 1]
-        full_scores = np.nan_to_num(full_scores, nan=0.0, posinf=1.0, neginf=0.0)
-        full_scores = np.clip(full_scores, 0.0, 1.0)
-        full_scores = (full_scores - full_scores.min()) / (full_scores.max() - full_scores.min() + 1e-8)
+        # Replace NaNs/Infs and clamp values to [vmin, vmax]
+        full_scores = np.nan_to_num(full_scores, nan=vmin, posinf=vmax, neginf=vmin)
+        full_scores = np.clip(full_scores, vmin, vmax)
 
-        # Map to red gradient: dark red (low score) to bright red (high score)
-        min_red = 0.4
-        red_channel = min_red + full_scores * (1.0 - min_red)
-        green_channel = np.zeros_like(red_channel)
-        blue_channel = np.zeros_like(red_channel)
+        # Normalize to [0, 1] range for colormap
+        norm_scores = (full_scores - vmin) / (vmax - vmin + 1e-8)
 
-        return np.stack([red_channel, green_channel, blue_channel], axis=1)
+        # Apply inferno colormap
+        inferno_cmap = plt.get_cmap('inferno')
+        rgba = inferno_cmap(norm_scores)  # shape (N, 4), values in [0, 1]
+        rgb = rgba[:, :3]  # Drop alpha channel
+
+        return rgb  # shape: (N, 3), values in [0.0, 1.0]
     
     def publish_semantic_pointcloud(self, points, colors, scores):
         if points is None or len(points) == 0:
@@ -353,6 +359,12 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             if param.name == "topk" and isinstance(param.value, int):
                 self.topk = param.value
                 self.get_logger().info(f"Dynamically updated topk to {self.topk}")
+            if param.name == "min_inferno_score" and isinstance(param.value, float):
+                self.min_inferno_score = param.value
+                self.get_logger().info(f"Dynamically updated min_inferno_score to {self.min_inferno_score}")
+            if param.name == "max_inferno_score" and isinstance(param.value, float):
+                self.max_inferno_score = param.value
+                self.get_logger().info(f"Dynamically updated max_inferno_score to {self.max_inferno_score}")
         return SetParametersResult(successful=True)
     
     def print_all_parameters(self):
