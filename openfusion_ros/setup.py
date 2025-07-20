@@ -31,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'openfusion_ros = openfusion_ros.ros2_wrapper.openfusion_ros_node:main',
+            'load_model = openfusion_ros.ros2_wrapper.load_model_node:main',
         ],
     },
 )
