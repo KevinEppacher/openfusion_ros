@@ -17,7 +17,7 @@ class Robot:
         self.camera = Camera(node)
 
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self.node)
+        self.tf_listener = TransformListener(self.tf_buffer, self.node, spin_thread=True)
 
         self.pose_pub = None
         self.pose_timer = None
