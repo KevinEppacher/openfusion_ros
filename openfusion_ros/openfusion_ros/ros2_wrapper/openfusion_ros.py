@@ -1,3 +1,4 @@
+import time
 import rclpy
 from rclpy.lifecycle import TransitionCallbackReturn
 from rclpy.lifecycle import State
@@ -43,62 +44,97 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.semantic_input = None
 
     def on_configure(self, state: State):
-        # Declare parameters
-        if not self.has_parameter("robot.parent_frame"):  
-            self.declare_parameter("robot.parent_frame", "map")
-        if not self.has_parameter("pose_min_translation"):
-            self.declare_parameter("pose_min_translation", 0.05)
-        if not self.has_parameter("pose_min_rotation"):
-            self.declare_parameter("pose_min_rotation", 5.0)
-        if not self.has_parameter("topk"):
-            self.declare_parameter("topk", 10)
-        if not self.has_parameter("skip_loading_model"):
-            self.declare_parameter("skip_loading_model", False)
-        if not self.has_parameter("min_inferno_score"):
-            self.declare_parameter("min_inferno_score", 0.0)
-        if not self.has_parameter("max_inferno_score"):
-            self.declare_parameter("max_inferno_score", 1.0)
+        try:
+            # Declare parameters
+            if not self.has_parameter("robot.parent_frame"):
+                self.declare_parameter("robot.parent_frame", "map")
+            if not self.has_parameter("pose_min_translation"):
+                self.declare_parameter("pose_min_translation", 0.05)
+            if not self.has_parameter("pose_min_rotation"):
+                self.declare_parameter("pose_min_rotation", 5.0)
+            if not self.has_parameter("topk"):
+                self.declare_parameter("topk", 10)
+            if not self.has_parameter("skip_loading_model"):
+                self.declare_parameter("skip_loading_model", False)
+            if not self.has_parameter("min_inferno_score"):
+                self.declare_parameter("min_inferno_score", 0.0)
+            if not self.has_parameter("max_inferno_score"):
+                self.declare_parameter("max_inferno_score", 1.0)
 
-        # Get parameter values
-        self.parent_frame = self.get_parameter("robot.parent_frame").get_parameter_value().string_value
-        self.pose_min_translation = self.get_parameter("pose_min_translation").get_parameter_value().double_value
-        self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
-        self.topk = self.get_parameter("topk").get_parameter_value().integer_value
-        self.skip_loading_model = self.get_parameter("skip_loading_model").get_parameter_value().bool_value
-        self.min_inferno_score = self.get_parameter("min_inferno_score").get_parameter_value().double_value
-        self.max_inferno_score = self.get_parameter("max_inferno_score").get_parameter_value().double_value
+            # Get parameter values
+            self.parent_frame = self.get_parameter("robot.parent_frame").get_parameter_value().string_value
+            self.pose_min_translation = self.get_parameter("pose_min_translation").get_parameter_value().double_value
+            self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
+            self.topk = self.get_parameter("topk").get_parameter_value().integer_value
+            self.skip_loading_model = self.get_parameter("skip_loading_model").get_parameter_value().bool_value
+            self.min_inferno_score = self.get_parameter("min_inferno_score").get_parameter_value().double_value
+            self.max_inferno_score = self.get_parameter("max_inferno_score").get_parameter_value().double_value
 
-        # Call base class configure
-        result = super().on_configure(state)
-        if result != TransitionCallbackReturn.SUCCESS:
-            return result
+            # wait a short time for CameraInfo to arrive (non-blocking long-run)
+            max_retries = 5
+            retry = 0
+            # CamInfo does not provide is_set(); check cam_info_msg safely
+            while getattr(self.camera_info, "cam_info_msg", None) is None and retry < max_retries:
+                self.get_logger().warn("CameraInfo not set. Retrying...")
+                time.sleep(0.5)
+                retry += 1
 
-        # Add dynamic reconfigure
-        self.add_on_set_parameters_callback(self.parameter_update_callback)
+            # Call base class configure
+            result = super().on_configure(state)
+            if result != TransitionCallbackReturn.SUCCESS:
+                self.get_logger().error("Failed to configure OpenFusionNode VLM Base Class.")
+                return result
 
-        # Create Publishers
-        self.pc_pub = self.create_publisher(PointCloud2, "pointcloud", 10)
-        self.semantic_pc_pub_visualization = self.create_publisher(PointCloud2, 'semantic_pointcloud_visualization', 10)
-        self.semantic_pc_pub_xyzi = self.create_publisher(PointCloud2, 'semantic_pointcloud_xyzi', 10)
-        self.pose_pub = self.create_publisher(PoseArray, 'pose_array', 10)
+            # Add dynamic reconfigure
+            self.add_on_set_parameters_callback(self.parameter_update_callback)
 
-        # Create Subscribers
-        self.prompt_sub = self.create_subscription(SemanticPrompt, '/user_prompt', self.semantic_prompt_callback, 10)
+            # Create Publishers
+            self.pc_pub = self.create_publisher(PointCloud2, "pointcloud", 10)
+            self.semantic_pc_pub_visualization = self.create_publisher(PointCloud2, 'semantic_pointcloud_visualization', 10)
+            self.semantic_pc_pub_xyzi = self.create_publisher(PointCloud2, 'semantic_pointcloud_xyzi', 10)
+            self.pose_pub = self.create_publisher(PoseArray, 'pose_array', 10)
 
-        # self.print_all_parameters()
+            # Create Subscribers
+            self.prompt_sub = self.create_subscription(SemanticPrompt, '/user_prompt', self.semantic_prompt_callback, 10)
 
-        return TransitionCallbackReturn.SUCCESS
+            self.print_all_parameters()
+
+            if not self.skip_loading_model:
+                if getattr(self.camera_info, "cam_info_msg", None) is not None:
+                    loaded = self.load_model()
+                    if not loaded:
+                        self.get_logger().error("Model could not be loaded.")
+                        return TransitionCallbackReturn.FAILURE
+                else:
+                    # Defensive: CameraInfo missing
+                    self.get_logger().error("Cannot load model: CameraInfo missing.")
+                    return TransitionCallbackReturn.FAILURE
+
+            return TransitionCallbackReturn.SUCCESS
+        except Exception as e:
+            import traceback
+            self.get_logger().error(f"Exception in on_configure: {e}")
+            for line in traceback.format_exc().splitlines():
+                self.get_logger().error(line)
+            return TransitionCallbackReturn.FAILURE
 
     def on_activate(self, state: State):
-        result = super().on_activate(state)
-        if result != TransitionCallbackReturn.SUCCESS:
-            return result
+        try:
+            result = super().on_activate(state)
+            if result != TransitionCallbackReturn.SUCCESS:
+                return result
 
-        self._pcl_timer = self.create_timer(0.1, self.pcl_timer_callback)
-        self._append_pose_timer = self.create_timer(1.0, self.append_pose_timer_callback)
-        self.get_logger().info(f"{GREEN}[{self.get_name()}] Timers started.{RESET}")
+            self._pcl_timer = self.create_timer(0.1, self.pcl_timer_callback)
+            self._append_pose_timer = self.create_timer(1.0, self.append_pose_timer_callback)
+            self.get_logger().info(f"{GREEN}[{self.get_name()}] Timers started.{RESET}")
 
-        return TransitionCallbackReturn.SUCCESS
+            return TransitionCallbackReturn.SUCCESS
+        except Exception as e:
+            import traceback
+            self.get_logger().error(f"Exception in on_activate: {e}")
+            for line in traceback.format_exc().splitlines():
+                self.get_logger().error(line)
+            return TransitionCallbackReturn.FAILURE
 
     def on_deactivate(self, state: State):
         if self._pcl_timer:
@@ -138,7 +174,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         if not self.robot:
             self.get_logger().error(f"{RED}Robot is not initialized. Cannot load model.{RESET}")
             return False
-
+        
         if self.camera_info is None or self.camera_info.cam_info_msg is None:
             self.get_logger().error("CameraInfo not set.")
             return False
@@ -405,5 +441,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             "logging.enabled",
             "logging.log_file"
         ]:
-            value = self.get_parameter(name).value
+            if self.has_parameter(name):
+                value = self.get_parameter(name).value
+            else:
+                value = "<not set>"
             self.get_logger().info(f"  {name}: {value}")
