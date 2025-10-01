@@ -3,7 +3,7 @@ openfusion_ros:
     ros__parameters:
       robot:
         parent_frame: "map"
-        child_frame: "camera"
+        child_frame: "carter_camera_stereo_right"
         pose_topic: "robot_pose"
         max_delta_time: 0.2
         camera:
