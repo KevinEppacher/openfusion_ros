@@ -20,7 +20,9 @@ from openfusion_ros.ros2_wrapper.camera import CamInfo
 from openfusion_ros.slam import build_slam, BaseSLAM
 from openfusion_ros.utils.utils import prepare_openfusion_input
 from multimodal_query_msgs.msg import SemanticPrompt
-import matplotlib.pyplot as plt  # oben im File sicherstellen
+import threading
+from queue import Queue, Empty
+import matplotlib.pyplot as plt
 
 class OpenFusionNode(VLMBaseLifecycleNode):
     def __init__(self):
@@ -57,6 +59,10 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.pose_array = None
         self.semantic_input = None
 
+        self.worker_thread = None
+        self.task_queue = Queue()
+        self.stop_event = threading.Event()
+
     def on_configure(self, state: State):
         try:
             # Declare parameters
@@ -70,10 +76,14 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                 self.declare_parameter("topk", 10)
             if not self.has_parameter("skip_loading_model"):
                 self.declare_parameter("skip_loading_model", False)
-            if not self.has_parameter("min_inferno_score"):
-                self.declare_parameter("min_inferno_score", 0.0)
-            if not self.has_parameter("max_inferno_score"):
-                self.declare_parameter("max_inferno_score", 1.0)
+            if not self.has_parameter("inferno_score.min"):
+                self.declare_parameter("inferno_score.min", 0.0)
+            if not self.has_parameter("inferno_score.max"):
+                self.declare_parameter("inferno_score.max", 1.0)
+            if not self.has_parameter("timer_period.append_poses"):
+                self.declare_parameter("timer_period.append_poses", 1.0)
+            if not self.has_parameter("timer_period.pointcloud"):
+                self.declare_parameter("timer_period.pointcloud", 0.1)
 
             # Get parameter values
             self.parent_frame = self.get_parameter("robot.parent_frame").get_parameter_value().string_value
@@ -81,8 +91,10 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
             self.topk = self.get_parameter("topk").get_parameter_value().integer_value
             self.skip_loading_model = self.get_parameter("skip_loading_model").get_parameter_value().bool_value
-            self.min_inferno_score = self.get_parameter("min_inferno_score").get_parameter_value().double_value
-            self.max_inferno_score = self.get_parameter("max_inferno_score").get_parameter_value().double_value
+            self.min_inferno_score = self.get_parameter("inferno_score.min").get_parameter_value().double_value
+            self.max_inferno_score = self.get_parameter("inferno_score.max").get_parameter_value().double_value
+            self.publish_interval_append_poses = self.get_parameter("timer_period.append_poses").get_parameter_value().double_value
+            self.publish_interval_pointcloud = self.get_parameter("timer_period.pointcloud").get_parameter_value().double_value
 
             # wait a short time for CameraInfo to arrive (non-blocking long-run)
             max_retries = 20
@@ -137,9 +149,14 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             result = super().on_activate(state)
             if result != TransitionCallbackReturn.SUCCESS:
                 return result
+            
+            self.stop_event.clear()
+            self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
+            self.worker_thread.start()
+            self.get_logger().info("Worker thread started for OpenFusion computation.")
 
-            self._pcl_timer = self.create_timer(0.1, self.pcl_timer_callback)
-            self._append_pose_timer = self.create_timer(1.0, self.append_pose_timer_callback)
+            self._append_pose_timer = self.create_timer(self.publish_interval_append_poses, self.enqueue_append_pose)
+            self._pcl_timer = self.create_timer(self.publish_interval_pointcloud, self.enqueue_publish_pointcloud)
             self.get_logger().info(f"{GREEN}[{self.get_name()}] Timers started.{RESET}")
 
             return TransitionCallbackReturn.SUCCESS
@@ -151,6 +168,9 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             return TransitionCallbackReturn.FAILURE
 
     def on_deactivate(self, state: State):
+        self.stop_event.set()
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=2.0)
         if self._pcl_timer:
             self._pcl_timer.cancel()
             self._pcl_timer = None
@@ -240,7 +260,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         pc2_msg = pc2.create_cloud(header, fields, cloud)
         self.pc_pub.publish(pc2_msg)
 
-    def pcl_timer_callback(self):
+    def _do_publish_pointcloud(self):
         if not self.model:
             self.get_logger().warn(f"{YELLOW}Model is not loaded. Cannot publish pointcloud.{RESET}")
             return
@@ -258,7 +278,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         self.process_semantic_query()
 
-    def append_pose_timer_callback(self):
+    def _do_append_pose(self):
         result = self.robot.get_openfusion_input()
         if result is None:
             return
@@ -444,8 +464,6 @@ class OpenFusionNode(VLMBaseLifecycleNode):
     def print_all_parameters(self):
         self.get_logger().info("OpenFusionNode parameters:")
         for name in [
-            "append_poses_frequency",
-            "pointcloud_frequency",
             "pose_min_translation",
             "pose_min_rotation",
             "parent_frame",
@@ -460,3 +478,24 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             else:
                 value = "<not set>"
             self.get_logger().info(f"  {name}: {value}")
+
+    def enqueue_append_pose(self):
+        self.task_queue.put(("append_pose", None))
+
+    def enqueue_publish_pointcloud(self):
+        self.task_queue.put(("publish_pointcloud", None))
+
+    def worker_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                task, data = self.task_queue.get(timeout=0.1)
+            except Empty:
+                continue
+
+            try:
+                if task == "append_pose":
+                    self._do_append_pose()
+                elif task == "publish_pointcloud":
+                    self._do_publish_pointcloud()
+            except Exception as e:
+                self.get_logger().error(f"Worker error during {task}: {e}")

@@ -5,6 +5,7 @@ from sensor_msgs.msg import CameraInfo
 import numpy as np
 from collections import deque
 from rclpy.time import Duration, Time
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from openfusion_ros.utils import BLUE, RED, YELLOW, BOLD, RESET, RED
 from openfusion_ros.utils.conversions import transform_to_matrix
@@ -34,47 +35,35 @@ class CamInfo:
 
 class Camera:
     def __init__(self, node):
-        self.class_name = self.__class__.__name__
         self.node = node
         self.bridge = CvBridge()
-        self.rgb_sub = None
-        self.depth_sub = None
         self.rgb_topic = None
         self.depth_topic = None
         self.debug_images = False
-        self.camera_infos = None
-        self.rgb_buffer = None
-        self.depth_buffer = None
-        self.max_age = None
+
+        self.rgb_msg = None
+        self.depth_msg = None
 
     def on_configure(self):
-        self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring Camera...{RESET}")
 
-        # --- Declare parameters ---
-        self.node.declare_parameter("robot.camera.max_buffer_size", 50)
-        self.node.declare_parameter("robot.camera.max_buffer_age_sec", 2.0)
+        # Parameters
         self.node.declare_parameter("robot.camera.rgb_topic", "/rgb")
         self.node.declare_parameter("robot.camera.depth_topic", "/depth")
         self.node.declare_parameter("robot.camera.debug_images", False)
 
-        # QoS parameters
-        self.node.declare_parameter("robot.camera.qos_reliability", "best_effort")  # "reliable" or "best_effort"
-        self.node.declare_parameter("robot.camera.qos_history", "keep_last")      # "keep_last" or "keep_all"
+        self.node.declare_parameter("robot.camera.qos_reliability", "best_effort")
+        self.node.declare_parameter("robot.camera.qos_history", "keep_last")
         self.node.declare_parameter("robot.camera.qos_depth", 10)
 
-        # --- Get parameter values ---
+        # Get values
         self.rgb_topic = self.node.get_parameter("robot.camera.rgb_topic").value
         self.depth_topic = self.node.get_parameter("robot.camera.depth_topic").value
         self.debug_images = self.node.get_parameter("robot.camera.debug_images").value
-        self.max_buffer_size = self.node.get_parameter("robot.camera.max_buffer_size").value
-        max_buffer_age_sec = self.node.get_parameter("robot.camera.max_buffer_age_sec").value
 
         qos_reliability = self.node.get_parameter("robot.camera.qos_reliability").value.lower()
         qos_history = self.node.get_parameter("robot.camera.qos_history").value.lower()
         qos_depth = self.node.get_parameter("robot.camera.qos_depth").value
-
-        # --- Build QoS profile ---
-        from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
         reliability = (
             ReliabilityPolicy.RELIABLE if qos_reliability == "reliable"
@@ -91,90 +80,50 @@ class Camera:
             depth=qos_depth,
         )
 
-        # --- Buffers ---
-        self.rgb_buffer = deque(maxlen=self.max_buffer_size)
-        self.depth_buffer = deque(maxlen=self.max_buffer_size)
-        self.max_age = Duration(seconds=max_buffer_age_sec)
-
         self.node.get_logger().info(
-            f"Configured {self.class_name} with QoS("
-            f"reliability={qos_reliability}, history={qos_history}, depth={qos_depth})"
+            f"Camera configured with QoS(reliability={qos_reliability}, history={qos_history}, depth={qos_depth})"
         )
 
     def on_activate(self):
-        self.node.get_logger().debug(f"{YELLOW}{BOLD}Activating {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{YELLOW}{BOLD}Activating Camera...{RESET}")
 
-        # Use configurable QoS
         self.rgb_sub = self.node.create_subscription(
-            Image, self.rgb_topic, self.rgb_callback, self.qos_profile)
+            Image, self.rgb_topic, self.rgb_callback, self.qos_profile
+        )
         self.depth_sub = self.node.create_subscription(
-            Image, self.depth_topic, self.depth_callback, self.qos_profile)
+            Image, self.depth_topic, self.depth_callback, self.qos_profile
+        )
 
         self.node.get_logger().info(
-            f"Subscribed to {self.rgb_topic} and {self.depth_topic} "
-            f"with QoS depth={self.qos_profile.depth}, reliability={self.qos_profile.reliability.name}"
+            f"Subscribed to {self.rgb_topic} and {self.depth_topic}"
         )
 
     def on_deactivate(self):
-        self.node.get_logger().debug(f"{YELLOW}Deactivating {self.class_name}...{RESET}")
+        self.node.get_logger().debug(f"{YELLOW}Deactivating Camera...{RESET}")
         self.rgb_sub = None
         self.depth_sub = None
-        self.node.get_logger().debug(f"{YELLOW}{self.class_name} subscriptions deactivated.{RESET}")
 
     def on_cleanup(self):
-        self.node.get_logger().debug(f"{BLUE}Cleaning up {self.class_name}...{RESET}")
-        self.rgb_sub = None
-        self.depth_sub = None
-        self.rgb_topic = None
-        self.depth_topic = None
-        self.debug_images = False
-        self.camera_infos = None
-        self.rgb_buffer = None
-        self.depth_buffer = None
-        self.max_age = None
+        self.node.get_logger().debug(f"{BLUE}Cleaning up Camera...{RESET}")
+        self.rgb_msg = None
+        self.depth_msg = None
 
     def on_shutdown(self):
-        self.node.get_logger().debug(f"{RED}{BOLD}Shutting down {self.class_name}...{RESET}")
-        self.on_cleanup() 
+        self.node.get_logger().debug(f"{RED}{BOLD}Shutting down Camera...{RESET}")
+        self.on_cleanup()
 
     def rgb_callback(self, msg: Image):
-        self._prune_old(self.rgb_buffer)
-        self.rgb_buffer.append(msg)
-
+        self.rgb_msg = msg
         if self.debug_images:
-            image = self.rgb_buffer[0] if len(self.rgb_buffer) > 0 else msg
-            show_ros_image(image, "RGB Image")
-        
+            show_ros_image(msg, "RGB")
+
     def depth_callback(self, msg: Image):
-        self._prune_old(self.depth_buffer)
-        self.depth_buffer.append(msg)
-
+        self.depth_msg = msg
         if self.debug_images:
-            image = self.depth_buffer[0] if len(self.depth_buffer) > 0 else msg
-            show_ros_depth_image(image, "Depth Image")
+            show_ros_depth_image(msg, "Depth")
 
-    def _prune_old(self, buffer):
-        now = self.node.get_clock().now()
-        while buffer and (now - Time.from_msg(buffer[0].header.stamp)) > self.max_age:
-            buffer.popleft()
+    def get_rgb(self):
+        return self.rgb_msg
 
-    def get_rgb(self, which='latest'):
-        if which == 'latest':
-            return self.rgb_buffer[-1] if self.rgb_buffer else None
-        elif which == 'oldest':
-            return self.rgb_buffer[0] if self.rgb_buffer else None
-    
-    def get_depth(self, which='latest'):
-        if which == 'latest':
-            return self.depth_buffer[-1] if self.depth_buffer else None
-        elif which == 'oldest':
-            return self.depth_buffer[0] if self.depth_buffer else None
-    
-    def get_synced_pair(self, tolerance_sec=0.02):
-        for rgb in reversed(self.rgb_buffer):
-            rgb_time = Time.from_msg(rgb.header.stamp).nanoseconds * 1e-9
-            for depth in reversed(self.depth_buffer):
-                depth_time = Time.from_msg(depth.header.stamp).nanoseconds * 1e-9
-                if abs(rgb_time - depth_time) < tolerance_sec:
-                    return rgb, depth
-        return None, None
+    def get_depth(self):
+        return self.depth_msg

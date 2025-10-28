@@ -103,7 +103,7 @@ class Robot:
             return
 
         try:
-            rgb = self.camera.get_rgb(which="latest")
+            rgb = self.camera.get_rgb()
             if rgb is not None:
                 time_target = rclpy.time.Time.from_msg(rgb.header.stamp)
             else:
@@ -131,8 +131,8 @@ class Robot:
         
     def get_openfusion_input(self):
         pose = self.get_pose(datatype='tf2')
-        rgb = self.camera.get_rgb(which='latest')
-        depth = self.camera.get_depth(which='latest')
+        rgb = self.camera.get_rgb()
+        depth = self.camera.get_depth()
 
         # Check if any of the images or pose are None
         if pose is None or rgb is None or depth is None:
@@ -147,13 +147,18 @@ class Robot:
         # Extract timestamps
         rgb_time = convert_stamp_to_sec(rgb.header.stamp)
         depth_time = convert_stamp_to_sec(depth.header.stamp)
-        pose_time =convert_stamp_to_sec(pose.header.stamp)
+        pose_time = convert_stamp_to_sec(pose.header.stamp)
+
+        diff_rgb_depth = abs(rgb_time - depth_time)
+        diff_rgb_pose = abs(rgb_time - pose_time)
+        diff_depth_pose = abs(depth_time - pose_time)
+        self.node.get_logger().info(f"Timestamp differences - RGB-Depth: {diff_rgb_depth:.3f}s, RGB-Pose: {diff_rgb_pose:.3f}s, Depth-Pose: {diff_depth_pose:.3f}s")
 
         # Check if the timestamps are synchronized
         max_diff = max(
-            abs(rgb_time - depth_time),
-            abs(rgb_time - pose_time),
-            abs(depth_time - pose_time)
+            diff_rgb_depth,
+            diff_rgb_pose,
+            diff_depth_pose
         )
 
         if max_diff > self.max_delta_time:

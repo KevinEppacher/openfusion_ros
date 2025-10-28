@@ -10,21 +10,23 @@ openfusion_ros:
         child_frame: "carter_camera_stereo_right"
         max_delta_time: 0.2
         camera:
-          rgb_topic: "/rgb"
-          depth_topic: "/depth"
+          rgb_topic: "/rgb/throttled"
+          depth_topic: "/depth/throttled"
           debug_images: false
           max_buffer_size: 50
           max_buffer_age_sec: 3.0
-      append_poses_frequency: 10.0
-      pointcloud_frequency: 1.0
       pose_min_translation: 0.05
       pose_min_rotation: 5.0
-      topk: 20
+      topk: 15
       depth_max: 10.0
       use_sim_time: true
       skip_loading_model: false
-      min_inferno_score: 0.2
-      max_inferno_score: 0.45
+      inferno_score:
+        min: 0.2
+        max: 0.45
+      timer_period:
+        append_poses: 0.5
+        pointcloud: 0.1
 
 openfusion_ros:
   openfusion_tf_bridge:
