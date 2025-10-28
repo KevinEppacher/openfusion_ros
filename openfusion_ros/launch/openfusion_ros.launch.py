@@ -35,6 +35,18 @@ def generate_launch_description():
         ]
     )
 
+    openfusion_tf_bridge_node = Node(
+        package='openfusion_tf_bridge',
+        executable='openfusion_tf_bridge_node',
+        name='openfusion_tf_bridge',
+        namespace='openfusion_ros',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            openfusion_ros_config
+        ]
+    )
+
     lcm = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
@@ -59,5 +71,6 @@ def generate_launch_description():
     ld = LaunchDescription()
     ld.add_action(sim_time_arg)
     ld.add_action(openfusion_ros_node)
+    ld.add_action(openfusion_tf_bridge_node)
     ld.add_action(delayed_lcm)  # Add the delayed lifecycle manager
     return ld

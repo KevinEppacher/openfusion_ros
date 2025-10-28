@@ -20,6 +20,9 @@
   <build_depend>sensor_msgs</build_depend>
   <exec_depend>sensor_msgs</exec_depend>
 
+  <build_depend>openfusion_tf_bridge</build_depend>
+  <exec_depend>openfusion_tf_bridge</exec_depend>
+
   <build_depend>multimodal_query_msgs</build_depend>
   <exec_depend>multimodal_query_msgs</exec_depend>
 

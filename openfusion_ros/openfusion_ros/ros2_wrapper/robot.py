@@ -1,6 +1,6 @@
 import rclpy
 from tf2_ros import Buffer, TransformListener
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from tf_transformations import translation_from_matrix, quaternion_from_matrix
 from rclpy.duration import Duration
 
@@ -23,6 +23,10 @@ class Robot:
         self.pose_timer = None
         self.publish_interval = 0.01  # seconds
 
+        self.pose_source = "tf"  # default: use TF buffer
+        self.pose_sub = None
+        self.current_pose_msg = None
+
         self.prev_pose = None
         self.transform = None
 
@@ -37,11 +41,14 @@ class Robot:
             self.node.declare_parameter("robot.pose_topic", "robot_pose")
         if not self.node.has_parameter("robot.max_delta_time"):
             self.node.declare_parameter("robot.max_delta_time", 0.01)
+        if not self.node.has_parameter("robot.pose_source"):
+            self.node.declare_parameter("robot.pose_source", "tf")      # options: "tf" or "topic"
 
         self.parent_frame = self.node.get_parameter("robot.parent_frame").get_parameter_value().string_value
         self.child_frame = self.node.get_parameter("robot.child_frame").get_parameter_value().string_value
         self.pose_topic = self.node.get_parameter("robot.pose_topic").get_parameter_value().string_value
         self.max_delta_time = self.node.get_parameter("robot.max_delta_time").get_parameter_value().double_value
+        self.pose_source = self.node.get_parameter("robot.pose_source").get_parameter_value().string_value
 
         self.node.get_logger().debug(f"{BLUE}{BOLD}Finished configuring {self.class_name}{RESET}")
         self.camera.on_configure()
@@ -50,8 +57,19 @@ class Robot:
         self.node.get_logger().debug(f"{YELLOW}{BOLD}Activating {self.class_name}...{RESET}")
         self.camera.on_activate()
 
-        self.pose_pub = self.node.create_publisher(PoseStamped, self.pose_topic, 10)
+        self.pose_pub = self.node.create_publisher(PoseStamped, self.pose_topic+"/debug", 10)
         self.pose_timer = self.node.create_timer(self.publish_interval, self.publish_pose)
+
+        if self.pose_source == "topic":
+            self.pose_sub = self.node.create_subscription(
+                TransformStamped,
+                self.pose_topic,
+                self.pose_callback,
+                10
+            )
+            self.node.get_logger().info(f"Subscribed to pose topic: {self.pose_topic}")
+        else:
+            self.node.get_logger().info(f"Using TF buffer for pose lookup: {self.parent_frame} → {self.child_frame}")
 
         self.node.get_logger().debug(f"{BLUE}{self.class_name} activated.{RESET}")
 
@@ -76,20 +94,24 @@ class Robot:
         self.node.get_logger().debug(f"{RED}{BOLD}Shutting down {self.class_name}...{RESET}")
         self.camera.on_shutdown()
 
-    def update_pose(self, pose):
+    def update_pose(self, _=None):
+        if self.pose_source == "topic":
+            if self.current_pose_msg is None:
+                self.node.get_logger().info("No pose received yet from topic.")
+                return None
+            self.transform = self.current_pose_msg
+            return
+
         try:
-            rgb = self.camera.get_rgb(which="oldest")
-            if not rgb == None:
+            rgb = self.camera.get_rgb(which="latest")
+            if rgb is not None:
                 time_target = rclpy.time.Time.from_msg(rgb.header.stamp)
             else:
-                self.node.get_logger().warn("RGB image is None, using current time for transform lookup.")
                 time_target = rclpy.time.Time()
-
             self.transform = self.tf_buffer.lookup_transform(self.parent_frame, self.child_frame, time_target)
-
         except Exception as e:
             self.node.get_logger().warn(f"Transform not available: {e}")
-            return None
+            self.transform = None
 
     def get_pose(self, datatype='matrix'):
         self.update_pose(self.current_pose)
@@ -109,8 +131,8 @@ class Robot:
         
     def get_openfusion_input(self):
         pose = self.get_pose(datatype='tf2')
-        rgb = self.camera.get_rgb(which='oldest')
-        depth = self.camera.get_depth(which='oldest')
+        rgb = self.camera.get_rgb(which='latest')
+        depth = self.camera.get_depth(which='latest')
 
         # Check if any of the images or pose are None
         if pose is None or rgb is None or depth is None:
@@ -166,3 +188,6 @@ class Robot:
 
         self.pose_pub.publish(msg)
         self.last_publish_time = now
+
+    def pose_callback(self, msg: PoseStamped):
+        self.current_pose_msg = msg

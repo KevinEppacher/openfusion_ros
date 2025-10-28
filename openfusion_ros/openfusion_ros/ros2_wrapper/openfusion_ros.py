@@ -11,6 +11,7 @@ from geometry_msgs.msg import PoseArray, Pose
 import tf_transformations
 from scipy.spatial.transform import Rotation as R
 from rcl_interfaces.msg import SetParametersResult
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 from vlm_base.vlm_base import VLMBaseLifecycleNode
 from openfusion_ros.utils import BLUE, RED, YELLOW, GREEN, BOLD, RESET
@@ -35,8 +36,21 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.pc_pub = None  # LifecyclePublisher for PointCloud2
         self.semantic_pc_pub_visualization = None  # Publisher for semantic pointcloud
 
+        # Explicit, matching CameraInfo publisher
+        qos_camera_info = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
         # Subcribers
-        self.camera_info_sub = self.create_subscription(CameraInfo, '/camera_info', self.camera_info_callback, 10)
+        self.camera_info_sub = self.create_subscription(
+            CameraInfo,
+            '/camera_info',
+            self.camera_info_callback,
+            qos_camera_info
+        )
         self.clock_sub = None
 
         # Class member variables
@@ -71,7 +85,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             self.max_inferno_score = self.get_parameter("max_inferno_score").get_parameter_value().double_value
 
             # wait a short time for CameraInfo to arrive (non-blocking long-run)
-            max_retries = 5
+            max_retries = 20
             retry = 0
             # CamInfo does not provide is_set(); check cam_info_msg safely
             while getattr(self.camera_info, "cam_info_msg", None) is None and retry < max_retries:

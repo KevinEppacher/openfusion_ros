@@ -2,9 +2,12 @@ openfusion_ros:
   openfusion_ros:
     ros__parameters:
       robot:
+        pose_source: "topic"  # options: "tf" or "topic"
+        # If pose_source is "topic", set the following topic:
+        pose_topic: "/openfusion_ros/camera_pose"
+        # If pose_source is "tf", set the following frames:
         parent_frame: "map"
         child_frame: "carter_camera_stereo_right"
-        pose_topic: "robot_pose"
         max_delta_time: 0.2
         camera:
           rgb_topic: "/rgb"
@@ -22,3 +25,12 @@ openfusion_ros:
       skip_loading_model: false
       min_inferno_score: 0.2
       max_inferno_score: 0.45
+
+openfusion_ros:
+  openfusion_tf_bridge:
+    ros__parameters:
+      robot:
+        map_frame: "map"
+        camera_frame: "carter_camera_stereo_right"
+      camera_pose_topic: "camera_pose"
+      rate_hz: 30.0
