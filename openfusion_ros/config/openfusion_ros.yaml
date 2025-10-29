@@ -17,7 +17,7 @@ openfusion_ros:
           max_buffer_age_sec: 3.0
       pose_min_translation: 0.05
       pose_min_rotation: 5.0
-      topk: 15
+      topk: 5
       depth_max: 10.0
       use_sim_time: true
       skip_loading_model: false
