@@ -11,7 +11,7 @@ from geometry_msgs.msg import PoseArray, Pose
 import tf_transformations
 from scipy.spatial.transform import Rotation as R
 from rcl_interfaces.msg import SetParametersResult
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy, qos_profile_sensor_data
 
 from vlm_base.vlm_base import VLMBaseLifecycleNode
 from openfusion_ros.utils import BLUE, RED, YELLOW, GREEN, BOLD, RESET
@@ -37,16 +37,17 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.pose_pub = None  # Publisher for PoseArray
         self.pc_pub = None  # LifecyclePublisher for PointCloud2
         self.semantic_pc_pub_visualization = None  # Publisher for semantic pointcloud
-
+        qos_camera_info = qos_profile_sensor_data
         # Explicit, matching CameraInfo publisher
         qos_camera_info = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
 
         # Subcribers
+        
         self.camera_info_sub = self.create_subscription(
             CameraInfo,
             '/camera_info',
