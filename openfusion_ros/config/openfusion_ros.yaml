@@ -15,8 +15,8 @@ openfusion_ros:
           debug_images: false
           max_buffer_size: 50
           max_buffer_age_sec: 3.0
-      pose_min_translation: 0.05
-      pose_min_rotation: 5.0
+      pose_min_translation: 0.01
+      pose_min_rotation: 3.0
       topk: 5
       depth_max: 10.0
       use_sim_time: true

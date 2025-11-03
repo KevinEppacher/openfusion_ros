@@ -19,9 +19,10 @@ from openfusion_ros.ros2_wrapper.robot import Robot
 from openfusion_ros.ros2_wrapper.camera import CamInfo
 from openfusion_ros.slam import build_slam, BaseSLAM
 from openfusion_ros.utils.utils import prepare_openfusion_input
-from openfusion_ros.ros2_wrapper.semantic_manager import SemanticManager
-from openfusion_ros.ros2_wrapper.utils import is_pose_unique, map_scores_to_colors
 from multimodal_query_msgs.msg import SemanticPrompt
+import threading
+from queue import Queue, Empty
+import matplotlib.pyplot as plt
 
 class OpenFusionNode(VLMBaseLifecycleNode):
     def __init__(self):
@@ -36,57 +37,33 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         self.pose_pub = None  # Publisher for PoseArray
         self.pc_pub = None  # LifecyclePublisher for PointCloud2
         self.semantic_pc_pub_visualization = None  # Publisher for semantic pointcloud
-
-        if not self.has_parameter("camera_info.topic"):
-            self.declare_parameter("camera_info.topic", "/camera_info")
-        if not self.has_parameter("camera_info.reliability"):
-            self.declare_parameter("camera_info.reliability", "BEST_EFFORT")
-        if not self.has_parameter("camera_info.durability"):
-            self.declare_parameter("camera_info.durability", "VOLATILE")
-        if not self.has_parameter("camera_info.history"):
-            self.declare_parameter("camera_info.history", "KEEP_LAST")
-        if not self.has_parameter("camera_info.depth"):
-            self.declare_parameter("camera_info.depth", 10)
-        if not self.has_parameter("encode_image.iterations"):
-            self.declare_parameter("encode_image.iterations", 10)
-
-        camera_info_topic = self.get_parameter("camera_info.topic").get_parameter_value().string_value
-        camera_info_reliability = self.get_parameter("camera_info.reliability").get_parameter_value().string_value
-        camera_info_durability = self.get_parameter("camera_info.durability").get_parameter_value().string_value
-        camera_info_history = self.get_parameter("camera_info.history").get_parameter_value().string_value
-        camera_info_depth = self.get_parameter("camera_info.depth").get_parameter_value().integer_value
-        self.encode_image_iterations = self.get_parameter("encode_image.iterations").get_parameter_value().integer_value
-
+        qos_camera_info = qos_profile_sensor_data
+        # Explicit, matching CameraInfo publisher
         qos_camera_info = QoSProfile(
-            reliability=ReliabilityPolicy[camera_info_reliability],
-            durability=DurabilityPolicy[camera_info_durability],
-            history=HistoryPolicy[camera_info_history],
-            depth=camera_info_depth
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
         )
 
-        # Wait for CameraInfo publisher
-        timeout = 60.0
-        elapsed = 0.0
-        while self.count_publishers('/camera_info') == 0 and elapsed < timeout:
-            self.get_logger().info("Waiting for /camera_info publisher since {} seconds until timeout {}...".format(elapsed, timeout))
-            time.sleep(0.5)
-            elapsed += 0.5
-
-        # Subscribers
+        # Subcribers
+        
         self.camera_info_sub = self.create_subscription(
             CameraInfo,
-            camera_info_topic,
+            '/camera_info',
             self.camera_info_callback,
             qos_camera_info
         )
-
-        self.iteration = 0
-
         self.clock_sub = None
 
         # Class member variables
         self.pose_array = None
         self.semantic_input = None
+        self.i = 0
+
+        self.worker_thread = None
+        self.task_queue = Queue()
+        self.stop_event = threading.Event()
 
     def on_configure(self, state: State):
         try:
@@ -101,10 +78,14 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                 self.declare_parameter("topk", 10)
             if not self.has_parameter("skip_loading_model"):
                 self.declare_parameter("skip_loading_model", False)
-            if not self.has_parameter("min_inferno_score"):
-                self.declare_parameter("min_inferno_score", 0.0)
-            if not self.has_parameter("max_inferno_score"):
-                self.declare_parameter("max_inferno_score", 1.0)
+            if not self.has_parameter("inferno_score.min"):
+                self.declare_parameter("inferno_score.min", 0.0)
+            if not self.has_parameter("inferno_score.max"):
+                self.declare_parameter("inferno_score.max", 1.0)
+            if not self.has_parameter("timer_period.append_poses"):
+                self.declare_parameter("timer_period.append_poses", 1.0)
+            if not self.has_parameter("timer_period.pointcloud"):
+                self.declare_parameter("timer_period.pointcloud", 0.1)
 
             # Get parameter values
             self.parent_frame = self.get_parameter("robot.parent_frame").get_parameter_value().string_value
@@ -112,8 +93,10 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
             self.topk = self.get_parameter("topk").get_parameter_value().integer_value
             self.skip_loading_model = self.get_parameter("skip_loading_model").get_parameter_value().bool_value
-            self.min_inferno_score = self.get_parameter("min_inferno_score").get_parameter_value().double_value
-            self.max_inferno_score = self.get_parameter("max_inferno_score").get_parameter_value().double_value
+            self.min_inferno_score = self.get_parameter("inferno_score.min").get_parameter_value().double_value
+            self.max_inferno_score = self.get_parameter("inferno_score.max").get_parameter_value().double_value
+            self.publish_interval_append_poses = self.get_parameter("timer_period.append_poses").get_parameter_value().double_value
+            self.publish_interval_pointcloud = self.get_parameter("timer_period.pointcloud").get_parameter_value().double_value
 
             # wait a short time for CameraInfo to arrive (non-blocking long-run)
             max_retries = 20
@@ -150,8 +133,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                     if not loaded:
                         self.get_logger().error("Model could not be loaded.")
                         return TransitionCallbackReturn.FAILURE
-                    self.semantic_manager = SemanticManager(self, self.model)
                 else:
+                    # Defensive: CameraInfo missing
                     self.get_logger().error("Cannot load model: CameraInfo missing.")
                     return TransitionCallbackReturn.FAILURE
 
@@ -168,9 +151,14 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             result = super().on_activate(state)
             if result != TransitionCallbackReturn.SUCCESS:
                 return result
+            
+            self.stop_event.clear()
+            self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
+            self.worker_thread.start()
+            self.get_logger().info("Worker thread started for OpenFusion computation.")
 
-            self._pcl_timer = self.create_timer(0.1, self.pcl_timer_callback)
-            self._append_pose_timer = self.create_timer(1.0, self.append_pose_timer_callback)
+            self._append_pose_timer = self.create_timer(self.publish_interval_append_poses, self.enqueue_append_pose)
+            self._pcl_timer = self.create_timer(self.publish_interval_pointcloud, self.enqueue_publish_pointcloud)
             self.get_logger().info(f"{GREEN}[{self.get_name()}] Timers started.{RESET}")
 
             return TransitionCallbackReturn.SUCCESS
@@ -182,6 +170,9 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             return TransitionCallbackReturn.FAILURE
 
     def on_deactivate(self, state: State):
+        self.stop_event.set()
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=2.0)
         if self._pcl_timer:
             self._pcl_timer.cancel()
             self._pcl_timer = None
@@ -271,25 +262,26 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         pc2_msg = pc2.create_cloud(header, fields, cloud)
         self.pc_pub.publish(pc2_msg)
 
-    def pcl_timer_callback(self):
+    def _do_publish_pointcloud(self):
         if not self.model:
-            self.get_logger().warn(f"{YELLOW} Model is not loaded. Cannot publish pointcloud.{RESET}")
+            self.get_logger().warn(f"{YELLOW}Model is not loaded. Cannot publish pointcloud.{RESET}")
             return
+        self.i += 1
         
         self.model.vo()
-        self.model.compute_state(encode_image=self.iteration%self.encode_image_iterations==0)
+        self.model.compute_state(encode_image=self.i%10==0)
 
         points, colors = self.model.point_state.get_pc()
         self.publish_pointcloud(points, colors)
         self.publish_pose_array()
 
-        # if len(self.model.point_state.poses) <= 10:
-        #     # self.get_logger().info(f"{YELLOW} Not enough poses to publish semantic pointcloud.{RESET}")
-        #     return
+        if len(self.model.point_state.poses) <= 10:
+            self.get_logger().info(f"{YELLOW} Not enough poses to publish semantic pointcloud.{RESET}")
+            return
 
         # self.process_semantic_query()
 
-    def append_pose_timer_callback(self):
+    def _do_append_pose(self):
         result = self.robot.get_openfusion_input()
         if result is None:
             return
@@ -302,7 +294,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             return
 
         # Check if the new pose is significantly different from all existing
-        if not is_pose_unique(T_camera_map, self.model.point_state.poses,
+        if not self.is_pose_unique(T_camera_map, self.model.point_state.poses,
                                                         trans_diff_threshold=self.pose_min_translation,
                                                         fov_deg=self.pose_min_rotation):
             self.get_logger().debug(f"{YELLOW}[{self.get_name()}] Pose not significantly different. Skipping update.{RESET}")
@@ -310,24 +302,80 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         self.model.io.update(rgb, depth, T_camera_map)
         self.model.vo()
-        self.model.compute_state(encode_image=False)
+        self.model.compute_state(encode_image=True)
 
     def process_semantic_query(self):
-        """Handles semantic query and publishing of the filtered pointcloud."""
+        """Handles panoptic or semantic segmentation and publishing of the filtered pointcloud."""
         try:
-            if isinstance(self.model, BaseSLAM) and hasattr(self.model, "query"):
-                query_points, scores = self.model.query(
-                    self.semantic_input.text_query, topk=self.topk, only_poi=True
-                )
+            if not isinstance(self.model, BaseSLAM):
+                self.get_logger().error("Model is not an instance of BaseSLAM.")
+                return
 
-                if query_points is not None and len(query_points) > 0:
-                    query_colors = map_scores_to_colors(query_points, scores, vmin=self.min_inferno_score, vmax=self.max_inferno_score)
-                    self.publish_semantic_pointcloud_visualization(query_points, query_colors, scores)
-                    self.publish_semantic_pointcloud_xyzi(query_points, scores)
+            # Try panoptic_query first, then fallback to semantic_query
+            if hasattr(self.model, "panoptic_query"):
+                result = self.model.panoptic_query([
+                    "vase", "table", "tv shelf", "curtain", "wall", "floor", "ceiling", "door", "tv",
+                    "room plant", "light", "sofa", "cushion", "wall paint", "chair"
+                ])
+            else:
+                result = self.model.semantic_query([
+                    "vase", "table", "tv shelf", "curtain", "wall", "floor", "ceiling", "door", "tv",
+                    "room plant", "light", "sofa", "cushion", "wall paint", "chair"
+                ])
+
+            # Handle 2-return vs 4-return signatures
+            if isinstance(result, tuple):
+                if len(result) == 2:
+                    points, colors = result
+                    instance_ids = np.zeros(len(points), dtype=np.float32)
+                    class_names = ["unknown"] * 1
+                elif len(result) == 4:
+                    points, colors, instance_ids, class_names = result
                 else:
-                    self.get_logger().warn(f"Semantic query '{self.semantic_input.text_query}' returned no points.")
+                    self.get_logger().warn(f"Unexpected panoptic_query return length: {len(result)}")
+                    return
+            else:
+                self.get_logger().error("Invalid query return type.")
+                return
+
+            if points is None or len(points) == 0:
+                self.get_logger().warn("Panoptic query returned no points.")
+                return
+
+            # Publish directly using the returned colors
+            self.publish_semantic_pointcloud_visualization(points, colors, instance_ids)
+            self.publish_semantic_pointcloud_xyzi(points, instance_ids)
+
+            # Optional JSON export if instance IDs are available
+            if len(np.unique(instance_ids)) > 1:
+                self.export_panoptic_json(points, instance_ids, class_names)
+
         except Exception as e:
             self.get_logger().error(f"Semantic query failed: {e}")
+
+
+    def map_scores_to_colors(self, query_points, scores, vmin=0.0, vmax=1.0):
+        """Converts semantic scores to RGB colors using the inferno colormap with customizable normalization."""
+        default_score = vmin
+        full_scores = np.full(query_points.shape[0], default_score, dtype=np.float32)
+
+        # Fill known scores
+        if scores is not None and len(scores) <= len(full_scores):
+            full_scores[:len(scores)] = scores
+
+        # Replace NaNs/Infs and clamp values to [vmin, vmax]
+        full_scores = np.nan_to_num(full_scores, nan=vmin, posinf=vmax, neginf=vmin)
+        full_scores = np.clip(full_scores, vmin, vmax)
+
+        # Normalize to [0, 1] range for colormap
+        norm_scores = (full_scores - vmin) / (vmax - vmin + 1e-8)
+
+        # Apply inferno colormap
+        inferno_cmap = plt.get_cmap('inferno')
+        rgba = inferno_cmap(norm_scores)  # shape (N, 4), values in [0, 1]
+        rgb = rgba[:, :3]  # Drop alpha channel
+
+        return rgb  # shape: (N, 3), values in [0.0, 1.0]
     
     def publish_semantic_pointcloud_visualization(self, points, colors, scores):
         if points is None or len(points) == 0:
@@ -406,18 +454,34 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         self.pose_pub.publish(pose_array)
 
+    def is_pose_unique(self, new_pose, poses, trans_diff_threshold=0.05, fov_deg=70.0):
+        """
+        Check if new_pose is significantly different from all poses in the list.
+        Rotation is compared against half of the FOV (i.e., cone angle).
+        """
+        if not poses or len(poses) == 0:
+            return True
+
+        half_fov_deg = fov_deg / 2.0
+
+        for existing_pose in poses:
+            trans_diff = np.linalg.norm(new_pose[:3, 3] - existing_pose[:3, 3])
+
+            r1 = R.from_matrix(existing_pose[:3, :3])
+            r2 = R.from_matrix(new_pose[:3, :3])
+            delta_r = r1.inv() * r2
+            angle_deg = np.degrees(np.abs(delta_r.magnitude()))
+
+            if trans_diff < trans_diff_threshold and angle_deg < half_fov_deg:
+                return False
+
+        return True
+
     def semantic_prompt_callback(self, msg: SemanticPrompt):
-        self.get_logger().info(f"{BLUE}{BOLD}Received text prompt: {msg.text_query}{RESET}")
+        self.get_logger().info(f"{BLUE}{BOLD} Received text prompt: {msg.text_query} {RESET}")
         self.semantic_input = msg
 
-        # Trigger semantic encoding asynchronously
-        if hasattr(self, "semantic_manager"):
-            self.semantic_manager.trigger(msg.text_query)
-        else:
-            self.get_logger().warn("SemanticManager not initialized; running inline fallback.")
-            self.model.compute_state(bs=1, encode_image=True)
-
-        # Continue publishing semantic results (non-blocking)
+        # Process the semantic query
         self.process_semantic_query()
 
     def parameter_update_callback(self, params):
@@ -436,8 +500,6 @@ class OpenFusionNode(VLMBaseLifecycleNode):
     def print_all_parameters(self):
         self.get_logger().info("OpenFusionNode parameters:")
         for name in [
-            "append_poses_frequency",
-            "pointcloud_frequency",
             "pose_min_translation",
             "pose_min_rotation",
             "parent_frame",
@@ -452,3 +514,24 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             else:
                 value = "<not set>"
             self.get_logger().info(f"  {name}: {value}")
+
+    def enqueue_append_pose(self):
+        self.task_queue.put(("append_pose", None))
+
+    def enqueue_publish_pointcloud(self):
+        self.task_queue.put(("publish_pointcloud", None))
+
+    def worker_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                task, data = self.task_queue.get(timeout=0.1)
+            except Empty:
+                continue
+
+            try:
+                if task == "append_pose":
+                    self._do_append_pose()
+                elif task == "publish_pointcloud":
+                    self._do_publish_pointcloud()
+            except Exception as e:
+                self.get_logger().error(f"Worker error during {task}: {e}")
