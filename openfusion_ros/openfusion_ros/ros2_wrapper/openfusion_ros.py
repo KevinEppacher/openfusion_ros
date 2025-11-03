@@ -19,9 +19,8 @@ from openfusion_ros.ros2_wrapper.robot import Robot
 from openfusion_ros.ros2_wrapper.camera import CamInfo
 from openfusion_ros.slam import build_slam, BaseSLAM
 from openfusion_ros.utils.utils import prepare_openfusion_input
-from openfusion_ros.ros2_wrapper.semantic_manager import SemanticManager
-from openfusion_ros.ros2_wrapper.utils import is_pose_unique, map_scores_to_colors
 from multimodal_query_msgs.msg import SemanticPrompt
+import matplotlib.pyplot as plt  # oben im File sicherstellen
 
 class OpenFusionNode(VLMBaseLifecycleNode):
     def __init__(self):
@@ -150,8 +149,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                     if not loaded:
                         self.get_logger().error("Model could not be loaded.")
                         return TransitionCallbackReturn.FAILURE
-                    self.semantic_manager = SemanticManager(self, self.model)
                 else:
+                    # Defensive: CameraInfo missing
                     self.get_logger().error("Cannot load model: CameraInfo missing.")
                     return TransitionCallbackReturn.FAILURE
 
@@ -276,8 +275,8 @@ class OpenFusionNode(VLMBaseLifecycleNode):
             self.get_logger().warn(f"{YELLOW} Model is not loaded. Cannot publish pointcloud.{RESET}")
             return
         
-        self.model.vo()
-        self.model.compute_state(encode_image=self.iteration%self.encode_image_iterations==0)
+        # self.model.vo()
+        # self.model.compute_state(encode_image=False)
 
         points, colors = self.model.point_state.get_pc()
         self.publish_pointcloud(points, colors)
@@ -298,19 +297,22 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         T_camera_map = np.linalg.inv(pose)
 
         if self.model is None:
-            self.get_logger().warn(f"{YELLOW}Model is not loaded. Cannot append pose.{RESET}")
+            self.get_logger().warn(f"{YELLOW} Model is not loaded. Cannot append pose.{RESET}")
             return
 
         # Check if the new pose is significantly different from all existing
-        if not is_pose_unique(T_camera_map, self.model.point_state.poses,
+        if not self.is_pose_unique(T_camera_map, self.model.point_state.poses,
                                                         trans_diff_threshold=self.pose_min_translation,
                                                         fov_deg=self.pose_min_rotation):
             self.get_logger().debug(f"{YELLOW}[{self.get_name()}] Pose not significantly different. Skipping update.{RESET}")
             return
+        
+        self.iteration += 1
 
         self.model.io.update(rgb, depth, T_camera_map)
+        # 
         self.model.vo()
-        self.model.compute_state(encode_image=False)
+        self.model.compute_state(encode_image=self.iteration % 10 == 0)
 
     def process_semantic_query(self):
         """Handles semantic query and publishing of the filtered pointcloud."""
@@ -321,13 +323,36 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                 )
 
                 if query_points is not None and len(query_points) > 0:
-                    query_colors = map_scores_to_colors(query_points, scores, vmin=self.min_inferno_score, vmax=self.max_inferno_score)
+                    query_colors = self.map_scores_to_colors(query_points, scores, vmin=self.min_inferno_score, vmax=self.max_inferno_score)
                     self.publish_semantic_pointcloud_visualization(query_points, query_colors, scores)
                     self.publish_semantic_pointcloud_xyzi(query_points, scores)
                 else:
                     self.get_logger().warn(f"Semantic query '{self.semantic_input.text_query}' returned no points.")
         except Exception as e:
             self.get_logger().error(f"Semantic query failed: {e}")
+
+    def map_scores_to_colors(self, query_points, scores, vmin=0.0, vmax=1.0):
+        """Converts semantic scores to RGB colors using the inferno colormap with customizable normalization."""
+        default_score = vmin
+        full_scores = np.full(query_points.shape[0], default_score, dtype=np.float32)
+
+        # Fill known scores
+        if scores is not None and len(scores) <= len(full_scores):
+            full_scores[:len(scores)] = scores
+
+        # Replace NaNs/Infs and clamp values to [vmin, vmax]
+        full_scores = np.nan_to_num(full_scores, nan=vmin, posinf=vmax, neginf=vmin)
+        full_scores = np.clip(full_scores, vmin, vmax)
+
+        # Normalize to [0, 1] range for colormap
+        norm_scores = (full_scores - vmin) / (vmax - vmin + 1e-8)
+
+        # Apply inferno colormap
+        inferno_cmap = plt.get_cmap('inferno')
+        rgba = inferno_cmap(norm_scores)  # shape (N, 4), values in [0, 1]
+        rgb = rgba[:, :3]  # Drop alpha channel
+
+        return rgb  # shape: (N, 3), values in [0.0, 1.0]
     
     def publish_semantic_pointcloud_visualization(self, points, colors, scores):
         if points is None or len(points) == 0:
@@ -406,18 +431,34 @@ class OpenFusionNode(VLMBaseLifecycleNode):
 
         self.pose_pub.publish(pose_array)
 
+    def is_pose_unique(self, new_pose, poses, trans_diff_threshold=0.05, fov_deg=70.0):
+        """
+        Check if new_pose is significantly different from all poses in the list.
+        Rotation is compared against half of the FOV (i.e., cone angle).
+        """
+        if not poses or len(poses) == 0:
+            return True
+
+        half_fov_deg = fov_deg / 2.0
+
+        for existing_pose in poses:
+            trans_diff = np.linalg.norm(new_pose[:3, 3] - existing_pose[:3, 3])
+
+            r1 = R.from_matrix(existing_pose[:3, :3])
+            r2 = R.from_matrix(new_pose[:3, :3])
+            delta_r = r1.inv() * r2
+            angle_deg = np.degrees(np.abs(delta_r.magnitude()))
+
+            if trans_diff < trans_diff_threshold and angle_deg < half_fov_deg:
+                return False
+
+        return True
+
     def semantic_prompt_callback(self, msg: SemanticPrompt):
-        self.get_logger().info(f"{BLUE}{BOLD}Received text prompt: {msg.text_query}{RESET}")
+        self.get_logger().info(f"{BLUE}{BOLD} Received text prompt: {msg.text_query} {RESET}")
         self.semantic_input = msg
 
-        # Trigger semantic encoding asynchronously
-        if hasattr(self, "semantic_manager"):
-            self.semantic_manager.trigger(msg.text_query)
-        else:
-            self.get_logger().warn("SemanticManager not initialized; running inline fallback.")
-            self.model.compute_state(bs=1, encode_image=True)
-
-        # Continue publishing semantic results (non-blocking)
+        # Process the semantic query
         self.process_semantic_query()
 
     def parameter_update_callback(self, params):
