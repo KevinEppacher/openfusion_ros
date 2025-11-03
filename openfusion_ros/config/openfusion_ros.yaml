@@ -13,8 +13,9 @@ openfusion_ros:
           rgb_topic: "/rgb/throttled"
           depth_topic: "/depth/throttled"
           debug_images: false
-          max_buffer_size: 50
-          max_buffer_age_sec: 3.0
+          resize: true
+          resize_width: 640
+          resize_height: 480
       pose_min_translation: 0.01
       pose_min_rotation: 3.0
       topk: 5

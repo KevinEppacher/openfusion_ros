@@ -31,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'openfusion_ros = openfusion_ros.ros2_wrapper.openfusion_ros_node:main',
+            'scannet_collector = openfusion_ros.test.scannet_collector_node:main',
         ],
     },
 )

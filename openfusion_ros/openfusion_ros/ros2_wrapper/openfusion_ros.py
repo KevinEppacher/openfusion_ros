@@ -1,395 +1,121 @@
 import time
+import threading
 import rclpy
-from rclpy.lifecycle import TransitionCallbackReturn
-from rclpy.lifecycle import State
+from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, PointCloud2, PointField
+from geometry_msgs.msg import PoseArray, Pose
 from std_msgs.msg import Header
+from rclpy.qos import qos_profile_sensor_data
 import sensor_msgs_py.point_cloud2 as pc2
 import numpy as np
-from rosgraph_msgs.msg import Clock
-from geometry_msgs.msg import PoseArray, Pose
 import tf_transformations
-from scipy.spatial.transform import Rotation as R
-from rcl_interfaces.msg import SetParametersResult
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy, qos_profile_sensor_data
 
-from vlm_base.vlm_base import VLMBaseLifecycleNode
-from openfusion_ros.utils import BLUE, RED, YELLOW, GREEN, BOLD, RESET
-from openfusion_ros.ros2_wrapper.robot import Robot
+from openfusion_ros.utils import BLUE, BOLD, RESET
 from openfusion_ros.ros2_wrapper.camera import CamInfo
-from openfusion_ros.slam import build_slam, BaseSLAM
+from openfusion_ros.ros2_wrapper.robot import Robot
 from openfusion_ros.utils.utils import prepare_openfusion_input
+from openfusion_ros.ros2_wrapper.utils import is_pose_unique, map_scores_to_colors
+from openfusion_ros.slam import build_slam, BaseSLAM
 from multimodal_query_msgs.msg import SemanticPrompt
-import matplotlib.pyplot as plt  # oben im File sicherstellen
 
-class OpenFusionNode(VLMBaseLifecycleNode):
-    def __init__(self):
-        super().__init__('openfusion_node')
-        self.camera_info = CamInfo()
 
-        # Timers
-        self._pcl_timer = None
-        self._append_pose_timer = None
+# --------------------------------------------------------------------------- #
+# Camera Manager
+# --------------------------------------------------------------------------- #
+class CameraManager:
+    def __init__(self, node):
+        self.node = node
+        self.cam_info = CamInfo()
+        self._received_once = False
+        self.subscription = None
 
-        # Publishers
-        self.pose_pub = None  # Publisher for PoseArray
-        self.pc_pub = None  # LifecyclePublisher for PointCloud2
-        self.semantic_pc_pub_visualization = None  # Publisher for semantic pointcloud
-
-        if not self.has_parameter("camera_info.topic"):
-            self.declare_parameter("camera_info.topic", "/camera_info")
-        if not self.has_parameter("camera_info.reliability"):
-            self.declare_parameter("camera_info.reliability", "BEST_EFFORT")
-        if not self.has_parameter("camera_info.durability"):
-            self.declare_parameter("camera_info.durability", "VOLATILE")
-        if not self.has_parameter("camera_info.history"):
-            self.declare_parameter("camera_info.history", "KEEP_LAST")
-        if not self.has_parameter("camera_info.depth"):
-            self.declare_parameter("camera_info.depth", 10)
-        if not self.has_parameter("encode_image.iterations"):
-            self.declare_parameter("encode_image.iterations", 10)
-
-        camera_info_topic = self.get_parameter("camera_info.topic").get_parameter_value().string_value
-        camera_info_reliability = self.get_parameter("camera_info.reliability").get_parameter_value().string_value
-        camera_info_durability = self.get_parameter("camera_info.durability").get_parameter_value().string_value
-        camera_info_history = self.get_parameter("camera_info.history").get_parameter_value().string_value
-        camera_info_depth = self.get_parameter("camera_info.depth").get_parameter_value().integer_value
-        self.encode_image_iterations = self.get_parameter("encode_image.iterations").get_parameter_value().integer_value
-
-        qos_camera_info = QoSProfile(
-            reliability=ReliabilityPolicy[camera_info_reliability],
-            durability=DurabilityPolicy[camera_info_durability],
-            history=HistoryPolicy[camera_info_history],
-            depth=camera_info_depth
+    def init_subscription(self, on_first_message=None):
+        topic = self.node.get_parameter_or("camera_info.topic", "/camera_info")
+        self.node.get_logger().info(f"Subscribing to CameraInfo topic: {topic}")
+        self.subscription = self.node.create_subscription(
+            CameraInfo, topic, lambda msg: self._callback(msg, on_first_message),
+            qos_profile_sensor_data
         )
 
-        # Wait for CameraInfo publisher
-        timeout = 60.0
-        elapsed = 0.0
-        while self.count_publishers('/camera_info') == 0 and elapsed < timeout:
-            self.get_logger().info("Waiting for /camera_info publisher since {} seconds until timeout {}...".format(elapsed, timeout))
-            time.sleep(0.5)
-            elapsed += 0.5
+    def _callback(self, msg: CameraInfo, on_first_message):
+        if not self._received_once:
+            self.cam_info = CamInfo(msg)
+            self._received_once = True
+            self.node.get_logger().info(f"Received CameraInfo {msg.width}x{msg.height}")
+            if on_first_message:
+                on_first_message()
 
-        # Subscribers
-        self.camera_info_sub = self.create_subscription(
-            CameraInfo,
-            camera_info_topic,
-            self.camera_info_callback,
-            qos_camera_info
-        )
+    def is_ready(self):
+        return self._received_once
 
-        self.iteration = 0
+    def get_intrinsics(self):
+        return self.cam_info.get_intrinsics()
 
-        self.clock_sub = None
 
-        # Class member variables
-        self.pose_array = None
-        self.semantic_input = None
+# --------------------------------------------------------------------------- #
+# Publisher Manager
+# --------------------------------------------------------------------------- #
+class PublisherManager:
+    def __init__(self, node):
+        self.node = node
 
-    def on_configure(self, state: State):
-        try:
-            # Declare parameters
-            if not self.has_parameter("robot.parent_frame"):
-                self.declare_parameter("robot.parent_frame", "map")
-            if not self.has_parameter("pose_min_translation"):
-                self.declare_parameter("pose_min_translation", 0.05)
-            if not self.has_parameter("pose_min_rotation"):
-                self.declare_parameter("pose_min_rotation", 5.0)
-            if not self.has_parameter("topk"):
-                self.declare_parameter("topk", 10)
-            if not self.has_parameter("skip_loading_model"):
-                self.declare_parameter("skip_loading_model", False)
-            if not self.has_parameter("min_inferno_score"):
-                self.declare_parameter("min_inferno_score", 0.0)
-            if not self.has_parameter("max_inferno_score"):
-                self.declare_parameter("max_inferno_score", 1.0)
+        # --- Publishers ---
+        self.pose_pub = node.create_publisher(PoseArray, "pose_array", 10)
+        self.pc_pub = node.create_publisher(PointCloud2, "pointcloud", 10)
+        self.semantic_pc_pub = node.create_publisher(PointCloud2, "semantic_pc", 10)
+        self.semantic_pc_pub_xyzi = node.create_publisher(PointCloud2, "semantic_pointcloud_xyzi", 10)
 
-            # Get parameter values
-            self.parent_frame = self.get_parameter("robot.parent_frame").get_parameter_value().string_value
-            self.pose_min_translation = self.get_parameter("pose_min_translation").get_parameter_value().double_value
-            self.pose_min_rotation = self.get_parameter("pose_min_rotation").get_parameter_value().double_value
-            self.topk = self.get_parameter("topk").get_parameter_value().integer_value
-            self.skip_loading_model = self.get_parameter("skip_loading_model").get_parameter_value().bool_value
-            self.min_inferno_score = self.get_parameter("min_inferno_score").get_parameter_value().double_value
-            self.max_inferno_score = self.get_parameter("max_inferno_score").get_parameter_value().double_value
-
-            # wait a short time for CameraInfo to arrive (non-blocking long-run)
-            max_retries = 20
-            retry = 0
-            # CamInfo does not provide is_set(); check cam_info_msg safely
-            while getattr(self.camera_info, "cam_info_msg", None) is None and retry < max_retries:
-                self.get_logger().warn("CameraInfo not set. Retrying...")
-                time.sleep(0.5)
-                retry += 1
-
-            # Call base class configure
-            result = super().on_configure(state)
-            if result != TransitionCallbackReturn.SUCCESS:
-                self.get_logger().error("Failed to configure OpenFusionNode VLM Base Class.")
-                return result
-
-            # Add dynamic reconfigure
-            self.add_on_set_parameters_callback(self.parameter_update_callback)
-
-            # Create Publishers
-            self.pc_pub = self.create_publisher(PointCloud2, "pointcloud", 10)
-            self.semantic_pc_pub_visualization = self.create_publisher(PointCloud2, 'semantic_pointcloud_visualization', 10)
-            self.semantic_pc_pub_xyzi = self.create_publisher(PointCloud2, 'semantic_pointcloud_xyzi', 10)
-            self.pose_pub = self.create_publisher(PoseArray, 'pose_array', 10)
-
-            # Create Subscribers
-            self.prompt_sub = self.create_subscription(SemanticPrompt, '/user_prompt', self.semantic_prompt_callback, 10)
-
-            self.print_all_parameters()
-
-            if not self.skip_loading_model:
-                if getattr(self.camera_info, "cam_info_msg", None) is not None:
-                    loaded = self.load_model()
-                    if not loaded:
-                        self.get_logger().error("Model could not be loaded.")
-                        return TransitionCallbackReturn.FAILURE
-                else:
-                    # Defensive: CameraInfo missing
-                    self.get_logger().error("Cannot load model: CameraInfo missing.")
-                    return TransitionCallbackReturn.FAILURE
-
-            return TransitionCallbackReturn.SUCCESS
-        except Exception as e:
-            import traceback
-            self.get_logger().error(f"Exception in on_configure: {e}")
-            for line in traceback.format_exc().splitlines():
-                self.get_logger().error(line)
-            return TransitionCallbackReturn.FAILURE
-
-    def on_activate(self, state: State):
-        try:
-            result = super().on_activate(state)
-            if result != TransitionCallbackReturn.SUCCESS:
-                return result
-
-            self._pcl_timer = self.create_timer(0.1, self.pcl_timer_callback)
-            self._append_pose_timer = self.create_timer(1.0, self.append_pose_timer_callback)
-            self.get_logger().info(f"{GREEN}[{self.get_name()}] Timers started.{RESET}")
-
-            return TransitionCallbackReturn.SUCCESS
-        except Exception as e:
-            import traceback
-            self.get_logger().error(f"Exception in on_activate: {e}")
-            for line in traceback.format_exc().splitlines():
-                self.get_logger().error(line)
-            return TransitionCallbackReturn.FAILURE
-
-    def on_deactivate(self, state: State):
-        if self._pcl_timer:
-            self._pcl_timer.cancel()
-            self._pcl_timer = None
-        if self._append_pose_timer:
-            self._append_pose_timer.cancel()
-            self._append_pose_timer = None
-
-        return super().on_deactivate(state)
-    
-    def on_cleanup(self, state: State):
-        self.get_logger().info(f"{BLUE}[{self.get_name()}] Cleaning up...{RESET}")
-        # Timers
-        self._pcl_timer = None
-        self._append_pose_timer = None
-
-        # Publishers
-        self.pose_pub = None  # Publisher for PoseArray
-        self.pc_pub = None  # LifecyclePublisher for PointCloud2
-        self.semantic_pc_pub_visualization = None  # Publisher for semantic pointcloud
-
-        # Subscribers
-        self.prompt_sub = None
-
-        # Class member variables
-        self.pose_array = None
-        self.semantic_input = None
-        self.skip_loading_model = False
-        return super().on_cleanup(state)
-
-    def load_robot(self):
-        self.robot = Robot(self)
-        return self.robot
-    
-    def load_model(self):
-        if not self.robot:
-            self.get_logger().error(f"{RED}Robot is not initialized. Cannot load model.{RESET}")
-            return False
-        
-        if self.camera_info is None or self.camera_info.cam_info_msg is None:
-            self.get_logger().error("CameraInfo not set.")
-            return False
-
-        camera_instrinsics = self.camera_info.get_intrinsics()
-        if camera_instrinsics is None:
-            self.get_logger().warn(f"{RED}Camera intrinsics not set. Cannot load model.{RESET}")
-            return False
-
-        params, args = prepare_openfusion_input(self.camera_info,
-                                                depth_max=10.0,
-                                                algorithm="vlfusion",
-                                                voxel_size=0.01953125,
-                                                block_resolution=8,
-                                                block_count=20000)
-
-        if self.skip_loading_model == True:
-            self.get_logger().info(f"{YELLOW}Skipping model loading as per configuration.{RESET}")
-            return True
-        
-        self.get_logger().debug(f"{YELLOW}{BOLD}Loading model...{RESET}")
-        self.model = build_slam(args, camera_instrinsics, params)
-        self.get_logger().debug(f"{BLUE}{BOLD}Model loaded successfully.{RESET}")
-        return True
-
-    def camera_info_callback(self, msg: CameraInfo):
-        self.camera_info = CamInfo(msg)
-
-    def publish_pointcloud(self, points, colors):
+    # -----------------------------------------------------------------------
+    def publish_pointcloud(self, frame, points, colors):
         if points is None or len(points) == 0:
-            self.get_logger().warn("Not enough points to publish for pointcloud. SLAM model needs to collect more data.")
             return
 
-        colors = np.clip(colors, 0, 1)
-        colors_uint8 = (colors * 255).astype(np.uint8)
-        rgb_uint32 = (colors_uint8[:, 0].astype(np.uint32) << 16 |
-                      colors_uint8[:, 1].astype(np.uint32) << 8 |
-                      colors_uint8[:, 2].astype(np.uint32))
-        cloud = [(x, y, z, rgb) for (x, y, z), rgb in zip(points, rgb_uint32)]
-        fields = [
-            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name='rgb', offset=12, datatype=PointField.UINT32, count=1)
-        ]
-        header = Header()
-        header.stamp = self.get_timestamp()
-        header.frame_id = self.parent_frame
-        pc2_msg = pc2.create_cloud(header, fields, cloud)
-        self.pc_pub.publish(pc2_msg)
-
-    def pcl_timer_callback(self):
-        if not self.model:
-            self.get_logger().warn(f"{YELLOW} Model is not loaded. Cannot publish pointcloud.{RESET}")
-            return
-        
-        # self.model.vo()
-        # self.model.compute_state(encode_image=False)
-
-        points, colors = self.model.point_state.get_pc()
-        self.publish_pointcloud(points, colors)
-        self.publish_pose_array()
-
-        # if len(self.model.point_state.poses) <= 10:
-        #     # self.get_logger().info(f"{YELLOW} Not enough poses to publish semantic pointcloud.{RESET}")
-        #     return
-
-        # self.process_semantic_query()
-
-    def append_pose_timer_callback(self):
-        result = self.robot.get_openfusion_input()
-        if result is None:
-            return
-
-        pose, rgb, depth = result
-        T_camera_map = np.linalg.inv(pose)
-
-        if self.model is None:
-            self.get_logger().warn(f"{YELLOW} Model is not loaded. Cannot append pose.{RESET}")
-            return
-
-        # Check if the new pose is significantly different from all existing
-        if not self.is_pose_unique(T_camera_map, self.model.point_state.poses,
-                                                        trans_diff_threshold=self.pose_min_translation,
-                                                        fov_deg=self.pose_min_rotation):
-            self.get_logger().debug(f"{YELLOW}[{self.get_name()}] Pose not significantly different. Skipping update.{RESET}")
-            return
-        
-        self.iteration += 1
-
-        self.model.io.update(rgb, depth, T_camera_map)
-        # 
-        self.model.vo()
-        self.model.compute_state(encode_image=self.iteration % 10 == 0)
-
-    def process_semantic_query(self):
-        """Handles semantic query and publishing of the filtered pointcloud."""
-        try:
-            if isinstance(self.model, BaseSLAM) and hasattr(self.model, "query"):
-                query_points, scores = self.model.query(
-                    self.semantic_input.text_query, topk=self.topk, only_poi=True
-                )
-
-                if query_points is not None and len(query_points) > 0:
-                    query_colors = self.map_scores_to_colors(query_points, scores, vmin=self.min_inferno_score, vmax=self.max_inferno_score)
-                    self.publish_semantic_pointcloud_visualization(query_points, query_colors, scores)
-                    self.publish_semantic_pointcloud_xyzi(query_points, scores)
-                else:
-                    self.get_logger().warn(f"Semantic query '{self.semantic_input.text_query}' returned no points.")
-        except Exception as e:
-            self.get_logger().error(f"Semantic query failed: {e}")
-
-    def map_scores_to_colors(self, query_points, scores, vmin=0.0, vmax=1.0):
-        """Converts semantic scores to RGB colors using the inferno colormap with customizable normalization."""
-        default_score = vmin
-        full_scores = np.full(query_points.shape[0], default_score, dtype=np.float32)
-
-        # Fill known scores
-        if scores is not None and len(scores) <= len(full_scores):
-            full_scores[:len(scores)] = scores
-
-        # Replace NaNs/Infs and clamp values to [vmin, vmax]
-        full_scores = np.nan_to_num(full_scores, nan=vmin, posinf=vmax, neginf=vmin)
-        full_scores = np.clip(full_scores, vmin, vmax)
-
-        # Normalize to [0, 1] range for colormap
-        norm_scores = (full_scores - vmin) / (vmax - vmin + 1e-8)
-
-        # Apply inferno colormap
-        inferno_cmap = plt.get_cmap('inferno')
-        rgba = inferno_cmap(norm_scores)  # shape (N, 4), values in [0, 1]
-        rgb = rgba[:, :3]  # Drop alpha channel
-
-        return rgb  # shape: (N, 3), values in [0.0, 1.0]
-    
-    def publish_semantic_pointcloud_visualization(self, points, colors, scores):
-        if points is None or len(points) == 0:
-            self.get_logger().warn("No semantic points to publish")
-            return
-
-        # Convert RGB from float [0, 1] to uint8 [0, 255] and pack into single uint32
         colors_uint8 = (np.clip(colors, 0, 1) * 255).astype(np.uint8)
-        rgb_uint32 = (colors_uint8[:, 0].astype(np.uint32) << 16 |
-                    colors_uint8[:, 1].astype(np.uint32) << 8 |
-                    colors_uint8[:, 2].astype(np.uint32))
-
-        # Create combined point data (x, y, z, rgb, intensity)
-        cloud = [(x, y, z, rgb, i) for (x, y, z), rgb, i in zip(points, rgb_uint32, scores)]
+        rgb_uint32 = (
+            (colors_uint8[:, 0].astype(np.uint32) << 16)
+            | (colors_uint8[:, 1].astype(np.uint32) << 8)
+            | colors_uint8[:, 2].astype(np.uint32)
+        )
+        cloud = [(x, y, z, rgb) for (x, y, z), rgb in zip(points, rgb_uint32)]
 
         fields = [
-            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name='rgb', offset=12, datatype=PointField.UINT32, count=1),
-            PointField(name='intensity', offset=16, datatype=PointField.FLOAT32, count=1)
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name="rgb", offset=12, datatype=PointField.UINT32, count=1),
         ]
 
         header = Header()
-        header.stamp = self.get_timestamp()
-        header.frame_id = self.parent_frame
+        header.stamp = self.node.get_clock().now().to_msg()
+        header.frame_id = frame
+        msg = pc2.create_cloud(header, fields, cloud)
+        self.pc_pub.publish(msg)
 
-        pc2_msg = pc2.create_cloud(header, fields, cloud)
-        self.semantic_pc_pub_visualization.publish(pc2_msg)
+    # -----------------------------------------------------------------------
+    def publish_pose_array(self, frame, poses):
+        msg = PoseArray()
+        msg.header.frame_id = frame
+        msg.header.stamp = self.node.get_clock().now().to_msg()
 
-    def publish_semantic_pointcloud_xyzi(self, points, scores):
+        for T in poses:
+            inv = np.linalg.inv(T)
+            pose = Pose()
+            pose.position.x, pose.position.y, pose.position.z = inv[:3, 3]
+            q = tf_transformations.quaternion_from_matrix(inv)
+            pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = q
+            msg.poses.append(pose)
+
+        self.pose_pub.publish(msg)
+
+    # -----------------------------------------------------------------------
+    def publish_semantic_pointcloud_xyzi(self, frame, points, scores):
+        """Publish semantic point cloud with intensity (score)."""
         if points is None or len(points) == 0:
-            self.get_logger().warn("No semantic points to publish (XYZI)")
+            self.node.get_logger().warn("No semantic points to publish (XYZI)")
             return
 
         # Create (x, y, z, intensity) tuples
-        cloud = [(x, y, z, i) for (x, y, z), i in zip(points, scores)]
+        cloud = [(x, y, z, float(i)) for (x, y, z), i in zip(points, scores)]
 
         fields = [
             PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
@@ -399,97 +125,132 @@ class OpenFusionNode(VLMBaseLifecycleNode):
         ]
 
         header = Header()
-        header.stamp = self.get_timestamp()
-        header.frame_id = self.parent_frame
+        header.stamp = self.node.get_clock().now().to_msg()
+        header.frame_id = frame
 
-        pc2_msg = pc2.create_cloud(header, fields, cloud)
-        self.semantic_pc_pub_xyzi.publish(pc2_msg)
+        msg = pc2.create_cloud(header, fields, cloud)
+        self.semantic_pc_pub_xyzi.publish(msg)
 
-    def get_timestamp(self):
-        return rclpy.time.Time().to_msg()
+# --------------------------------------------------------------------------- #
+# Model Manager
+# --------------------------------------------------------------------------- #
+class FusionModelManager:
+    def __init__(self, node, robot):
+        self.node = node
+        self.robot = robot
+        self.model = None
+        self.iteration = 0
 
-    def publish_pose_array(self):
-        pose_array = PoseArray()
-        pose_array.header.stamp = self.get_timestamp()
-        pose_array.header.frame_id = self.parent_frame
+    def load(self):
+        """Wait for camera info and RGB frame, then build OpenFusion SLAM."""
+        start = time.time()
+        timeout = 5.0  # seconds
 
-        if self.model is None or not hasattr(self.model, 'point_state'):
-            return
+        # Wait for camera info and image
+        img_h, img_w = self.robot.camera.get_size()
+        intrinsics = self.robot.camera.get_intrinsics()
 
-        for matrix in self.model.point_state.poses:
-            inverted_matrix = np.linalg.inv(matrix)
-            pose = Pose()
-            pose.position.x = inverted_matrix[0, 3]
-            pose.position.y = inverted_matrix[1, 3]
-            pose.position.z = inverted_matrix[2, 3]
-            q = tf_transformations.quaternion_from_matrix(inverted_matrix)
-            pose.orientation.x = q[0]
-            pose.orientation.y = q[1]
-            pose.orientation.z = q[2]
-            pose.orientation.w = q[3]
-            pose_array.poses.append(pose)
+        while (img_h == 0 or img_w == 0 or intrinsics is None) and time.time() - start < timeout:
+            self.node.get_logger().warn("Waiting for resized CameraInfo and first RGB frame...")
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+            img_h, img_w = self.robot.camera.get_size()
+            intrinsics = self.robot.camera.get_intrinsics()
 
-        self.pose_pub.publish(pose_array)
+        if intrinsics is None or img_h == 0 or img_w == 0:
+            self.node.get_logger().error("Timeout waiting for valid CameraInfo / intrinsics.")
+            return False
 
-    def is_pose_unique(self, new_pose, poses, trans_diff_threshold=0.05, fov_deg=70.0):
-        """
-        Check if new_pose is significantly different from all poses in the list.
-        Rotation is compared against half of the FOV (i.e., cone angle).
-        """
-        if not poses or len(poses) == 0:
-            return True
+        self.node.get_logger().info(f"Using resized intrinsics for {img_w}x{img_h}")
 
-        half_fov_deg = fov_deg / 2.0
+        # Prepare OpenFusion params
+        params, args = prepare_openfusion_input(
+            self.robot.camera.get_resized_camera_info(),
+            depth_max=10.0,
+            algorithm="vlfusion",
+            voxel_size=0.01953125,
+            block_resolution=8,
+            block_count=20000,
+            img_size=(img_h, img_w),
+            input_size=(img_h, img_w)
+        )
 
-        for existing_pose in poses:
-            trans_diff = np.linalg.norm(new_pose[:3, 3] - existing_pose[:3, 3])
-
-            r1 = R.from_matrix(existing_pose[:3, :3])
-            r2 = R.from_matrix(new_pose[:3, :3])
-            delta_r = r1.inv() * r2
-            angle_deg = np.degrees(np.abs(delta_r.magnitude()))
-
-            if trans_diff < trans_diff_threshold and angle_deg < half_fov_deg:
-                return False
-
+        # Build model
+        self.model = build_slam(args, intrinsics, params)
+        self.node.get_logger().info("SLAM model loaded successfully.")
         return True
 
-    def semantic_prompt_callback(self, msg: SemanticPrompt):
-        self.get_logger().info(f"{BLUE}{BOLD} Received text prompt: {msg.text_query} {RESET}")
-        self.semantic_input = msg
+    def append_pose(self, pose_data):
+        pose, rgb, depth = pose_data
+        T_camera_map = np.linalg.inv(pose)
+        if not is_pose_unique(
+            T_camera_map, self.model.point_state.poses,
+            trans_diff_threshold=0.05, fov_deg=5.0
+        ): return
+        self.iteration += 1
+        self.model.io.update(rgb, depth, T_camera_map)
+        self.model.vo()
+        self.model.compute_state(encode_image=self.iteration % 10 == 0)
 
-        # Process the semantic query
-        self.process_semantic_query()
 
-    def parameter_update_callback(self, params):
-        for param in params:
-            if param.name == "topk" and isinstance(param.value, int):
-                self.topk = param.value
-                self.get_logger().info(f"Dynamically updated topk to {self.topk}")
-            if param.name == "min_inferno_score" and isinstance(param.value, float):
-                self.min_inferno_score = param.value
-                self.get_logger().info(f"Dynamically updated min_inferno_score to {self.min_inferno_score}")
-            if param.name == "max_inferno_score" and isinstance(param.value, float):
-                self.max_inferno_score = param.value
-                self.get_logger().info(f"Dynamically updated max_inferno_score to {self.max_inferno_score}")
-        return SetParametersResult(successful=True)
-    
-    def print_all_parameters(self):
-        self.get_logger().info("OpenFusionNode parameters:")
-        for name in [
-            "append_poses_frequency",
-            "pointcloud_frequency",
-            "pose_min_translation",
-            "pose_min_rotation",
-            "parent_frame",
-            "child_frame",
-            "topk",
-            "depth_max",
-            "logging.enabled",
-            "logging.log_file"
-        ]:
-            if self.has_parameter(name):
-                value = self.get_parameter(name).value
-            else:
-                value = "<not set>"
-            self.get_logger().info(f"  {name}: {value}")
+# --------------------------------------------------------------------------- #
+# Main Node
+# --------------------------------------------------------------------------- #
+class OpenFusionNode(Node):
+    def __init__(self):
+        super().__init__("openfusion_node")
+
+        # Managers
+        self.pub_mgr = PublisherManager(self)
+        self.robot = Robot(self)
+        self.model_mgr = FusionModelManager(self, self.robot)
+        self.model_loaded = False
+
+        # Subscribe to prompts
+        self.prompt_sub = self.create_subscription(
+            SemanticPrompt, "/user_prompt", self.handle_prompt, 10
+        )
+
+        # --- Wait for camera info and then start model loading ---
+        if not self.robot.camera.wait_for_camera_info(timeout=5.0):
+            self.get_logger().error("Timeout waiting for CameraInfo.")
+        else:
+            self.get_logger().info("CameraInfo received, launching model load thread...")
+            threading.Thread(target=self._load_model_background, daemon=True).start()
+
+        # Timers
+        self.timer_pcl = self.create_timer(0.2, self.publish_pcl)
+        self.timer_pose = self.create_timer(1.0, self.update_pose)
+
+    # -----------------------------------------------------------------------
+    def _on_first_camera_info(self):
+        """Called once when first CameraInfo arrives."""
+        self.get_logger().info("Loading model after receiving CameraInfo...")
+        threading.Thread(target=self._load_model_background, daemon=True).start()
+
+    def _load_model_background(self):
+        if self.model_mgr.load():
+            self.model_loaded = True
+            self.get_logger().info("Model successfully loaded.")
+        else:
+            self.get_logger().error("Model failed to load.")
+
+    # -----------------------------------------------------------------------
+    def handle_prompt(self, msg):
+        self.get_logger().info(f"{BLUE}{BOLD}Prompt received: {msg.text_query}{RESET}")
+
+    def publish_pcl(self):
+        if not self.model_loaded:
+            return
+        model = self.model_mgr.model
+        if not model:
+            return
+        points, colors = model.point_state.get_pc()
+        self.pub_mgr.publish_pointcloud("map", points, colors)
+        self.pub_mgr.publish_pose_array("map", model.point_state.poses)
+
+    def update_pose(self):
+        if not self.model_loaded:
+            return
+        data = self.robot.get_openfusion_input()
+        if data:
+            self.model_mgr.append_pose(data)

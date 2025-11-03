@@ -26,7 +26,7 @@ def generate_launch_description():
         'openfusion_ros.yaml'
     )
 
-    openfusion_ros_node = LifecycleNode(
+    openfusion_ros_node = Node(
         package='openfusion_ros',
         executable='openfusion_ros',
         name="openfusion_ros",
@@ -52,31 +52,31 @@ def generate_launch_description():
         ]
     )
 
-    lcm = Node(
-        package='nav2_lifecycle_manager',
-        executable='lifecycle_manager',
-        name='lifecycle_manager_detection',
-        output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'autostart': True,
-            'bond_timeout': 0.0,
-            'node_names': [
-                '/openfusion_ros/openfusion_ros',
-            ]
-        }]
-    )
+    # lcm = Node(
+    #     package='nav2_lifecycle_manager',
+    #     executable='lifecycle_manager',
+    #     name='lifecycle_manager_detection',
+    #     output='screen',
+    #     parameters=[{
+    #         'use_sim_time': use_sim_time,
+    #         'autostart': True,
+    #         'bond_timeout': 0.0,
+    #         'node_names': [
+    #             '/openfusion_ros/openfusion_ros',
+    #         ]
+    #     }]
+    # )
 
-    # Delayed lifecycle manager launch (5 seconds delay)
-    delayed_lcm = TimerAction(
-        period=5.0,
-        actions=[lcm]
-    )
+    # # Delayed lifecycle manager launch (5 seconds delay)
+    # delayed_lcm = TimerAction(
+    #     period=5.0,
+    #     actions=[lcm]
+    # )
 
     ld = LaunchDescription()
     ld.add_action(console_format)
     ld.add_action(sim_time_arg)
     ld.add_action(openfusion_ros_node)
     ld.add_action(openfusion_tf_bridge_node)
-    ld.add_action(delayed_lcm)  # Add the delayed lifecycle manager
+    # ld.add_action(delayed_lcm)  # Add the delayed lifecycle manager
     return ld
