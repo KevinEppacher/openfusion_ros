@@ -225,7 +225,7 @@ class OpenFusionNode(VLMBaseLifecycleNode):
                                                 algorithm="vlfusion",
                                                 voxel_size=0.01953125,
                                                 block_resolution=8,
-                                                block_count=20000)
+                                                block_count=60000)
 
         if self.skip_loading_model == True:
             self.get_logger().info(f"{YELLOW}Skipping model loading as per configuration.{RESET}")

@@ -7,7 +7,6 @@ from openfusion_ros.utils.conversions import transform_to_matrix, convert_stamp_
 from openfusion_ros.utils.opencv import ros_image_2_opencv
 from openfusion_ros.ros2_wrapper.camera import Camera
 
-
 class Robot:
     """Robot interface that publishes poses and fetches TF transforms without lifecycle hooks."""
 
@@ -22,7 +21,7 @@ class Robot:
         self.max_delta_time = self.declare_param("robot.max_delta_time", 0.05)
         self.pose_source = self.declare_param("robot.pose_source", "tf")
         self.print_parameters()
-        
+
         # --- Camera and TF setup -------------------------------------------
         self.camera = Camera(node)
         self.tf_buffer = Buffer()
