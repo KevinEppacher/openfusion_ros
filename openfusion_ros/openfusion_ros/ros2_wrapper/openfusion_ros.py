@@ -111,6 +111,14 @@ class FusionModelManager:
         self.model = None
         self.iteration = 0
 
+        node.declare_parameter("append_pose.min_translation", 0.05)
+        node.declare_parameter("append_pose.max_rotation_deg", 5.0)
+        node.declare_parameter("encode_image_every_n_frames", 10)
+
+        self.min_trans = node.get_parameter("append_pose.min_translation").value
+        self.max_rot_deg = node.get_parameter("append_pose.max_rotation_deg").value
+        self.encode_image_every_n_frames = node.get_parameter("encode_image_every_n_frames").value
+
     def load(self):
         """Wait for camera info and RGB frame, then build OpenFusion SLAM."""
         start = time.time()
@@ -154,12 +162,12 @@ class FusionModelManager:
         T_camera_map = np.linalg.inv(pose)
         if not is_pose_unique(
             T_camera_map, self.model.point_state.poses,
-            trans_diff_threshold=0.05, fov_deg=5.0
+            trans_diff_threshold=self.min_trans, fov_deg=self.max_rot_deg
         ): return
         self.iteration += 1
         self.model.io.update(rgb, depth, T_camera_map)
         self.model.vo()
-        self.model.compute_state(encode_image=True)
+        self.model.compute_state(encode_image=(self.iteration % self.encode_image_every_n_frames == 0))
 
 class SemanticProcessor:
     """Handles semantic and panoptic queries for OpenFusion models."""
