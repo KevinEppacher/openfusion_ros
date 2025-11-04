@@ -25,11 +25,18 @@ class PublisherManager:
     def __init__(self, node):
         self.node = node
 
+        node.declare_parameter("topic_names.pose_array", "pose_array")
+        node.declare_parameter("topic_names.pointcloud", "pointcloud")
+        node.declare_parameter("topic_names.semantic_pointcloud_xyzi", "semantic_pointcloud_xyzi")
+
+        self.pose_array_topic = node.get_parameter("topic_names.pose_array").value
+        self.pointcloud_topic = node.get_parameter("topic_names.pointcloud").value
+        self.semantic_pointcloud_xyzi_topic = node.get_parameter("topic_names.semantic_pointcloud_xyzi").value
+
         # --- Publishers ---
-        self.pose_pub = node.create_publisher(PoseArray, "pose_array", 10)
-        self.pc_pub = node.create_publisher(PointCloud2, "pointcloud", 10)
-        self.semantic_pc_pub = node.create_publisher(PointCloud2, "semantic_pc", 10)
-        self.semantic_pc_pub_xyzi = node.create_publisher(PointCloud2, "semantic_pointcloud_xyzi", 10)
+        self.pose_pub = node.create_publisher(PoseArray, self.pose_array_topic, 10)
+        self.pc_pub = node.create_publisher(PointCloud2, self.pointcloud_topic, 10)
+        self.semantic_pc_pub_xyzi = node.create_publisher(PointCloud2, self.semantic_pointcloud_xyzi_topic, 10)
 
     def publish_pointcloud(self, frame, points, colors):
         if points is None or len(points) == 0:
@@ -115,9 +122,9 @@ class FusionModelManager:
 
         while (img_h == 0 or img_w == 0 or intrinsics is None) and time.time() - start < timeout:
             self.node.get_logger().warn("Waiting for resized CameraInfo and first RGB frame...")
-            rclpy.spin_once(self.node, timeout_sec=0.1)
             img_h, img_w = self.robot.camera.get_size()
             intrinsics = self.robot.camera.get_intrinsics()
+            time.sleep(0.1)
 
         if intrinsics is None or img_h == 0 or img_w == 0:
             self.node.get_logger().error("Timeout waiting for valid CameraInfo / intrinsics.")
@@ -152,7 +159,7 @@ class FusionModelManager:
         self.iteration += 1
         self.model.io.update(rgb, depth, T_camera_map)
         self.model.vo()
-        self.model.compute_state(encode_image=self.iteration % 10 == 0)
+        self.model.compute_state(encode_image=True)
 
 class SemanticProcessor:
     """Handles semantic and panoptic queries for OpenFusion models."""
@@ -163,7 +170,7 @@ class SemanticProcessor:
         self.pub_mgr = pub_mgr
 
         # --- Declare configurable parameters ------------------------------
-        self.mode = self.declare_param("semantic.mode", "semantic")  # query | semantic | panoptic
+        self.mode = self.declare_param("semantic.mode", "query")  # query | semantic | panoptic
         self.topk = self.declare_param("semantic.topk", 3)
         self.min_score = self.declare_param("semantic.min_score", 0.1)
         self.max_score = self.declare_param("semantic.max_score", 1.0)
@@ -194,70 +201,50 @@ class SemanticProcessor:
     def handle_prompt(self, msg):
         """Callback for incoming SemanticPrompt messages."""
         self.semantic_input = msg
-        self.node.get_logger().info(f"{BLUE}{BOLD}Received semantic prompt: {msg.text_query}{RESET}")
-        threading.Thread(target=self.process_query, daemon=True).start()
+        self.node.get_logger().info(
+            f"{BLUE}{BOLD}Received semantic prompt: {msg.text_query}{RESET}"
+        )
+        self.process_query()
 
     def process_query(self):
-        """Main entry point for processing semantic or panoptic queries."""
+        """Run semantic query and publish result point clouds."""
         model = self.model_mgr.model
         if model is None or not isinstance(model, BaseSLAM):
             self.node.get_logger().warn("Model not initialized or not BaseSLAM instance.")
             return
 
-        try:
-            mode = self.mode.lower()
-            self.node.get_logger().info(f"{YELLOW}Running semantic mode: {mode}{RESET}")
+        if not self.semantic_input:
+            self.node.get_logger().warn("No text query provided.")
+            return
 
-            if mode == "panoptic" and hasattr(model, "panoptic_query"):
-                result = model.panoptic_query(self.class_list)
-            elif mode == "semantic" and hasattr(model, "semantic_query"):
-                result = model.semantic_query(self.class_list)
-            elif mode == "query" and hasattr(model, "query") and self.semantic_input:
-                result = model.query(
-                    self.semantic_input.text_query,
-                    topk=self.topk,
-                    only_poi=True
-                )
-            else:
-                self.node.get_logger().warn(f"No valid query method for mode '{mode}' in model.")
+        try:
+            text_query = self.semantic_input.text_query
+            self.node.get_logger().info(f"{YELLOW}Running semantic query: '{text_query}'{RESET}")
+
+            # Perform the query
+            query_points, scores = model.query(
+                text_query, topk=self.topk, only_poi=True
+            )
+
+            # Validate and publish
+            if query_points is None or len(query_points) == 0:
+                self.node.get_logger().warn(f"Query '{text_query}' returned no points.")
                 return
 
-            self._handle_result(result, mode)
+            # colors = map_scores_to_colors(
+            #     query_points, scores,
+            #     vmin=self.min_score, vmax=self.max_score
+            # )
+
+            # self.pub_mgr.publish_pointcloud("map", query_points, colors)
+            self.pub_mgr.publish_semantic_pointcloud_xyzi("map", query_points, scores)
+
+            self.node.get_logger().info(
+                f"{BOLD}Query '{text_query}' finished: {len(query_points)} points published.{RESET}"
+            )
 
         except Exception as e:
             self.node.get_logger().error(f"{RED}Semantic query failed: {e}{RESET}")
-
-    def _handle_result(self, result, mode):
-        """Process and publish model query results."""
-        if not isinstance(result, tuple):
-            self.node.get_logger().error("Invalid query return type.")
-            return
-
-        points, colors, instance_ids, class_names = None, None, None, None
-
-        if len(result) == 2:
-            points, scores = result
-            colors = map_scores_to_colors(points, scores,
-                                          vmin=self.min_score,
-                                          vmax=self.max_score)
-            instance_ids = scores
-            class_names = ["unknown"]
-        elif len(result) == 4:
-            points, colors, instance_ids, class_names = result
-        else:
-            self.node.get_logger().warn(f"Unexpected {mode}_query return length: {len(result)}")
-            return
-
-        if points is None or len(points) == 0:
-            self.node.get_logger().warn(f"{mode.capitalize()} query returned no points.")
-            return
-
-        # Publish visual and intensity point clouds
-        self.pub_mgr.publish_pointcloud("map", points, colors)
-        self.pub_mgr.publish_semantic_pointcloud_xyzi("map", points, scores)
-
-        unique_ids = np.unique(instance_ids)
-        self.node.get_logger().info(f"{mode.capitalize()} query finished: {len(unique_ids)} unique instances.")
 
 # --------------------------------------------------------------------------- #
 # Main Node
@@ -287,7 +274,7 @@ class OpenFusionNode(Node):
         )
 
         # Wait for camera info, then load model
-        if not self.robot.camera.wait_for_camera_info(timeout=5.0):
+        if not self.robot.camera.wait_for_camera_info(timeout=30.0):
             self.get_logger().error("Timeout waiting for CameraInfo.")
         else:
             threading.Thread(target=self._load_model_background, daemon=True).start()

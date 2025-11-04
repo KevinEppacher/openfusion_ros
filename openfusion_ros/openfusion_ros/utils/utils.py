@@ -29,8 +29,8 @@ def prepare_openfusion_input(cam_info : CamInfo,
     'voxel_size': voxel_size,
     'block_resolution': block_resolution,
     'block_count': block_count,
-    'img_size': img_size,
-    'input_size': input_size  # Keep same if no resizing
+    'img_size': (1280, 720),
+    'input_size': (1280, 720)  # Keep same if no resizing
     }
 
     args = Namespace(

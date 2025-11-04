@@ -1,35 +1,45 @@
 openfusion_ros:
   openfusion_ros:
     ros__parameters:
-      robot:
-        pose_source: "topic"  # options: "tf" or "topic"
-        # If pose_source is "topic", set the following topic:
-        pose_topic: "/openfusion_ros/camera_pose"
-        # If pose_source is "tf", set the following frames:
-        parent_frame: "map"
-        child_frame: "carter_camera_stereo_right"
-        max_delta_time: 0.2
-        camera:
-          rgb_topic: "/rgb/throttled"
-          depth_topic: "/depth/throttled"
-          debug_images: false
-          resize: true
-          resize_width: 640
-          resize_height: 480
-      pose_min_translation: 0.01
-      pose_min_rotation: 3.0
-      topk: 5
-      depth_max: 10.0
+      robot.camera.debug_images: false
+      robot.camera.depth_topic: /depth/throttled
+      robot.camera.qos_depth: 10
+      robot.camera.qos_history: keep_last
+      robot.camera.qos_reliability: best_effort
+      robot.camera.rgb_topic: /rgb/throttled
+      robot.child_frame: carter_camera_stereo_right
+      robot.max_delta_time: 0.2
+      robot.parent_frame: map
+      robot.pose_source: topic
+      robot.pose_topic: /openfusion_ros/camera_pose
+      semantic.class_list:
+      - vase
+      - table
+      - tv shelf
+      - curtain
+      - wall
+      - floor
+      - ceiling
+      - door
+      - tv
+      - room plant
+      - light
+      - sofa
+      - cushion
+      - wall paint
+      - chair
+      semantic.max_score: 1.0
+      semantic.min_score: 0.1
+      semantic.mode: query
+      semantic.topk: 3
+      timer_period.publish_pcl: 3.0
+      timer_period.update_pose: 1.0
+      topic_names.pointcloud: pointcloud
+      topic_names.pose_array: pose_array
+      topic_names.semantic_pointcloud_xyzi: semantic_pointcloud_xyzi
       use_sim_time: true
-      skip_loading_model: false
-      inferno_score:
-        min: 0.2
-        max: 0.45
-      timer_period:
-        append_poses: 0.5
-        pointcloud: 0.1
+      user_prompt_topic: /user_prompt
 
-openfusion_ros:
   openfusion_tf_bridge:
     ros__parameters:
       robot:

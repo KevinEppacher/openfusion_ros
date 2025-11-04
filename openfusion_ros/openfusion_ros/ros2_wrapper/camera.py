@@ -63,8 +63,6 @@ class Camera:
         self.rgb_topic = self.declare_param("robot.camera.rgb_topic", "/rgb")
         self.depth_topic = self.declare_param("robot.camera.depth_topic", "/depth")
         self.debug_images = self.declare_param("robot.camera.debug_images", False)
-        self.resize_width = self.declare_param("robot.camera.resize_width", 640)
-        self.resize_height = self.declare_param("robot.camera.resize_height", 480)
         qos_reliability = self.declare_param("robot.camera.qos_reliability", "best_effort").lower()
         qos_history = self.declare_param("robot.camera.qos_history", "keep_last").lower()
         qos_depth = self.declare_param("robot.camera.qos_depth", 10)
@@ -90,7 +88,7 @@ class Camera:
         self.caminfo_sub = node.create_subscription(
             CameraInfo, "/camera_info", self.cb_cam_info, self.qos_profile
         )
-
+        
         self.node.get_logger().info(f"Subscribed to {self.rgb_topic}, {self.depth_topic}, and /camera_info")
 
     # -----------------------------------------------------------------------
@@ -104,7 +102,6 @@ class Camera:
             f"{BLUE}{BOLD}Camera parameters:{RESET}\n"
             f"  rgb_topic: {YELLOW}{self.rgb_topic}{RESET}\n"
             f"  depth_topic: {YELLOW}{self.depth_topic}{RESET}\n"
-            f"  resize: {YELLOW}{self.resize_width}x{self.resize_height}{RESET}\n"
             f"  debug_images: {YELLOW}{self.debug_images}{RESET}\n"
         )
 
@@ -120,7 +117,7 @@ class Camera:
         import time
         start = time.time()
         while not self.camera_info_received and time.time() - start < timeout:
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+            time.sleep(0.1)
         return self.camera_info_received
 
     # -----------------------------------------------------------------------
@@ -143,7 +140,9 @@ class Camera:
     def get_resized_camera_info(self):
         if not self.camera_info.msg:
             return None
-        return self.camera_info.scale_to(self.resize_width, self.resize_height)
+        if self.depth_msg is None:
+            return None
+        return self.camera_info.scale_to(self.depth_msg.width, self.depth_msg.height)
 
     def get_intrinsics(self):
         info = self.get_resized_camera_info()
@@ -152,4 +151,6 @@ class Camera:
         return np.array(info.k).reshape(3, 3)
 
     def get_size(self):
-        return self.resize_height, self.resize_width
+        if self.depth_msg is None:
+            return 0, 0
+        return self.depth_msg.height, self.depth_msg.width
