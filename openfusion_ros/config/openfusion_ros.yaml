@@ -1,6 +1,9 @@
 openfusion_ros:
   openfusion_ros:
     ros__parameters:
+      append_pose.max_rotation_deg: 10.0
+      append_pose.min_translation: 0.5
+      encode_image_every_n_frames: 20
       robot.camera.debug_images: false
       robot.camera.depth_topic: /depth/throttled
       robot.camera.qos_depth: 10
@@ -30,7 +33,7 @@ openfusion_ros:
       - chair
       semantic.max_score: 1.0
       semantic.min_score: 0.1
-      semantic.mode: query
+      semantic.mode: semantic
       semantic.topk: 3
       timer_period.publish_pcl: 3.0
       timer_period.update_pose: 0.1
@@ -39,6 +42,7 @@ openfusion_ros:
       topic_names.semantic_pointcloud_xyzi: semantic_pointcloud_xyzi
       use_sim_time: true
       user_prompt_topic: /user_prompt
+
 
   openfusion_tf_bridge:
     ros__parameters:

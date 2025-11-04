@@ -254,6 +254,53 @@ class SemanticProcessor:
         except Exception as e:
             self.node.get_logger().error(f"{RED}Semantic query failed: {e}{RESET}")
 
+    def process_auto(self):
+        """Automatically run semantic or panoptic query each PCL update."""
+        model = self.model_mgr.model
+        if model is None or not isinstance(model, BaseSLAM):
+            self.node.get_logger().warn("Model not initialized or not BaseSLAM instance.")
+            return
+
+        try:
+            result = None
+            mode = self.mode.lower()
+
+            if mode == "panoptic" and hasattr(model, "panoptic_query"):
+                self.node.get_logger().info(f"{YELLOW}Running auto panoptic query...{RESET}")
+                result = model.panoptic_query(self.class_list)
+            elif mode == "semantic" and hasattr(model, "semantic_query"):
+                self.node.get_logger().info(f"{YELLOW}Running auto semantic query...{RESET}")
+                result = model.semantic_query(self.class_list)
+            elif mode == "query" and self.semantic_input:
+                text_query = self.semantic_input.text_query
+                self.node.get_logger().info(f"{YELLOW}Re-running query: '{text_query}'{RESET}")
+                result = model.query(text_query, topk=self.topk, only_poi=True)
+            else:
+                return
+
+            if not isinstance(result, tuple):
+                self.node.get_logger().error("Invalid query return type.")
+                return
+
+            if len(result) == 2:
+                points, colors = result
+            elif len(result) == 4:
+                points, colors, instance_ids, class_names = result
+            else:
+                self.node.get_logger().warn(f"Unexpected query return length: {len(result)}")
+                return
+
+            if points is None or len(points) == 0:
+                self.node.get_logger().warn(f"{mode.capitalize()} query returned no points.")
+                return
+
+            # --- Publish only segmented colorful map ---
+            self.pub_mgr.publish_pointcloud("map", points, colors)
+            self.node.get_logger().info(f"{mode.capitalize()} map published ({len(points)} points).")
+
+        except Exception as e:
+            self.node.get_logger().error(f"{RED}Auto query failed: {e}{RESET}")
+
 # --------------------------------------------------------------------------- #
 # Main Node
 # --------------------------------------------------------------------------- #
@@ -311,24 +358,38 @@ class OpenFusionNode(Node):
         self.get_logger().info(f"{BLUE}{BOLD}Prompt received: {msg.text_query}{RESET}")
 
     def publish_pcl(self):
-        # Measure start time for overrun detection
         start = time.time()
 
         if not self.model_loaded:
             return
+
         model = self.model_mgr.model
         if not model:
             return
+
+        mode = self.semantic_proc.mode.lower()
+
+        # --- Semantic or Panoptic Mode: publish only segmented map ---
+        if mode in ["semantic", "panoptic"]:
+            self.semantic_proc.process_auto()
+            self.pub_mgr.publish_pose_array("map", model.point_state.poses)
+            elapsed = time.time() - start
+            if elapsed > self.pcl_period:
+                self.get_logger().warn(
+                    f"[publish_pcl] exceeded timer period: {elapsed:.3f}s > {self.pcl_period:.3f}s"
+                )
+            return
+
+        # --- Default or Query Mode: publish raw geometry + optional query ---
         points, colors = model.point_state.get_pc()
         self.pub_mgr.publish_pointcloud("map", points, colors)
         self.pub_mgr.publish_pose_array("map", model.point_state.poses)
+        self.semantic_proc.process_auto()
 
-        # Check for timer overruns
         elapsed = time.time() - start
         if elapsed > self.pcl_period:
             self.get_logger().warn(
-                f"[publish_pcl] exceeded timer period: "
-                f"{elapsed:.3f}s > {self.pcl_period:.3f}s"
+                f"[publish_pcl] exceeded timer period: {elapsed:.3f}s > {self.pcl_period:.3f}s"
             )
 
     def update_pose(self):
