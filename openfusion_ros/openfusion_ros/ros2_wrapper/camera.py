@@ -153,4 +153,4 @@ class Camera:
     def get_size(self):
         if self.depth_msg is None:
             return 0, 0
-        return self.depth_msg.height, self.depth_msg.width
+        return self.depth_msg.width, self.depth_msg.height

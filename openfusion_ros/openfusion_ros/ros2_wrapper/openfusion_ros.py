@@ -117,16 +117,16 @@ class FusionModelManager:
         timeout = 5.0  # seconds
 
         # Wait for camera info and image
-        img_h, img_w = self.robot.camera.get_size()
+        img_w, img_h = self.robot.camera.get_size()
         intrinsics = self.robot.camera.get_intrinsics()
 
-        while (img_h == 0 or img_w == 0 or intrinsics is None) and time.time() - start < timeout:
+        while (img_w == 0 or img_h == 0 or intrinsics is None) and time.time() - start < timeout:
             self.node.get_logger().warn("Waiting for resized CameraInfo and first RGB frame...")
-            img_h, img_w = self.robot.camera.get_size()
+            img_w, img_h = self.robot.camera.get_size()
             intrinsics = self.robot.camera.get_intrinsics()
             time.sleep(0.1)
 
-        if intrinsics is None or img_h == 0 or img_w == 0:
+        if intrinsics is None or img_w == 0 or img_h == 0:
             self.node.get_logger().error("Timeout waiting for valid CameraInfo / intrinsics.")
             return False
 
@@ -140,8 +140,8 @@ class FusionModelManager:
             voxel_size=0.01953125,
             block_resolution=8,
             block_count=60000,
-            img_size=(img_h, img_w),
-            input_size=(img_h, img_w)
+            img_size=(img_w, img_h),
+            input_size=(img_w, img_h)
         )
 
         # Build model

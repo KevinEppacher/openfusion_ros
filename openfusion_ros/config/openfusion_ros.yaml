@@ -33,7 +33,7 @@ openfusion_ros:
       semantic.mode: query
       semantic.topk: 3
       timer_period.publish_pcl: 3.0
-      timer_period.update_pose: 1.0
+      timer_period.update_pose: 0.1
       topic_names.pointcloud: pointcloud
       topic_names.pose_array: pose_array
       topic_names.semantic_pointcloud_xyzi: semantic_pointcloud_xyzi
