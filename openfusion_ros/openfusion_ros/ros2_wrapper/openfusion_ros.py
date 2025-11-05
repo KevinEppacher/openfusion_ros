@@ -1,14 +1,16 @@
 import time
 import threading
-import rclpy
+from turtle import mode
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import PoseArray, Pose
 from std_msgs.msg import Header
-from rclpy.qos import qos_profile_sensor_data
 import sensor_msgs_py.point_cloud2 as pc2
 import numpy as np
 import tf_transformations
+import os
+import json
+import open3d as o3d
 
 from openfusion_ros.utils import BLUE, YELLOW, RED, BOLD, RESET
 from openfusion_ros.ros2_wrapper.camera import CamInfo
@@ -18,6 +20,57 @@ from openfusion_ros.ros2_wrapper.utils import is_pose_unique, map_scores_to_colo
 from openfusion_ros.slam import build_slam, BaseSLAM
 from multimodal_query_msgs.msg import SemanticPrompt
 from std_srvs.srv import Trigger
+
+# --------------------------------------------------------------------------- #
+# Semantic Map Saver
+# --------------------------------------------------------------------------- #
+class SemanticMapSaver:
+    """Handles saving semantic or panoptic point clouds with class mappings."""
+
+    def __init__(self, node):
+        self.node = node
+        node.declare_parameter("output.semantic_map_dir", "/app/data/semantic_maps")
+        self.output_dir = node.get_parameter("output.semantic_map_dir").value
+
+        # Ensure output directory exists
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.node.get_logger().info(f"SemanticMapSaver initialized. Output dir: {self.output_dir}")
+
+    def save(self, points, colors, class_ids, class_list, filename_prefix="semantic_map"):
+        """Save semantic pointcloud and class mapping."""
+        if points is None or len(points) == 0:
+            self.node.get_logger().warn("No points to save.")
+            return
+
+        # --- Build filenames ---
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        ply_path = os.path.join(self.output_dir, f"{filename_prefix}_{timestamp}.ply")
+        json_path = os.path.join(self.output_dir, f"{filename_prefix}_{timestamp}.json")
+
+        # --- Ensure class_ids is Nx1 shape ---
+        if class_ids.ndim == 1:
+            class_ids = class_ids.reshape(-1, 1)
+
+        # --- Save pointcloud ---
+        try:
+            pcd = o3d.t.geometry.PointCloud()
+            pcd.point["positions"] = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32)
+            pcd.point["colors"] = o3d.core.Tensor(colors, dtype=o3d.core.Dtype.Float32)
+            pcd.point["class_id"] = o3d.core.Tensor(class_ids, dtype=o3d.core.Dtype.Int32)
+            o3d.t.io.write_point_cloud(ply_path, pcd)
+            self.node.get_logger().info(f"Saved semantic point cloud → {ply_path}")
+        except Exception as e:
+            self.node.get_logger().error(f"Failed to save PLY file: {e}")
+            return
+
+        # --- Save class mapping ---
+        try:
+            class_mapping = {i: name for i, name in enumerate(class_list)}
+            with open(json_path, "w") as f:
+                json.dump(class_mapping, f, indent=2)
+            self.node.get_logger().info(f"Saved class mapping → {json_path}")
+        except Exception as e:
+            self.node.get_logger().error(f"Failed to save JSON mapping: {e}")
 
 # --------------------------------------------------------------------------- #
 # Publisher Manager
@@ -134,7 +187,7 @@ class FusionModelManager:
     def load(self):
         """Wait for camera info and RGB frame, then build OpenFusion SLAM."""
         start = time.time()
-        timeout = 5.0  # seconds
+        timeout = 30.0  # seconds
 
         # Wait for camera info and image
         img_w, img_h = self.robot.camera.get_size()
@@ -188,6 +241,7 @@ class SemanticProcessor:
         self.node = node
         self.model_mgr = model_mgr
         self.pub_mgr = pub_mgr
+        self.saver = SemanticMapSaver(node)
 
         # --- Declare configurable parameters ------------------------------
         self.mode = self.declare_param("semantic.mode", "query")  # query | semantic | panoptic
@@ -283,15 +337,18 @@ class SemanticProcessor:
             else:
                 return
 
-            if not isinstance(result, tuple) or len(result) not in (2, 4):
+            if not isinstance(result, tuple) or len(result) not in (2, 3, 4):
                 self.node.get_logger().warn("Invalid query result type.")
                 return
 
             if len(result) == 2:
                 points, colors = result
                 scores = np.zeros(len(points), dtype=np.float32)
+            elif len(result) == 3:
+                points, colors, class_ids = result
+                self.saver.save(points, colors, class_ids, self.class_list, filename_prefix=mode)
             else:
-                points, colors, scores, _ = result
+                self.node.get_logger().warn("Unexpected number of return values from query.")
 
             if points is None or len(points) == 0:
                 self.node.get_logger().warn(f"{mode.capitalize()} query returned no points.")
