@@ -1,7 +1,7 @@
 openfusion_ros:
   openfusion_ros:
     ros__parameters:
-      append_pose.max_rotation_deg: 10.0
+      append_pose.max_rotation_deg: 30.0
       append_pose.min_translation: 0.5
       encode_image_every_n_frames: 20
       robot.camera.debug_images: false

@@ -26,23 +26,30 @@ class PublisherManager:
     def __init__(self, node):
         self.node = node
 
+        # Declare topic parameters for flexibility
+        node.declare_parameter("topic_names.slam_pointcloud", "slam_pointcloud")
+        node.declare_parameter("topic_names.query_pointcloud", "query_pointcloud_xyzi")
+        node.declare_parameter("topic_names.semantic_pointcloud", "semantic_pointcloud_rgb")
+        node.declare_parameter("topic_names.panoptic_pointcloud", "panoptic_pointcloud_rgb")
         node.declare_parameter("topic_names.pose_array", "pose_array")
-        node.declare_parameter("topic_names.pointcloud", "pointcloud")
-        node.declare_parameter("topic_names.semantic_pointcloud_xyzi", "semantic_pointcloud_xyzi")
 
+        # Retrieve topic names
+        self.slam_topic = node.get_parameter("topic_names.slam_pointcloud").value
+        self.query_topic = node.get_parameter("topic_names.query_pointcloud").value
+        self.semantic_topic = node.get_parameter("topic_names.semantic_pointcloud").value
+        self.panoptic_topic = node.get_parameter("topic_names.panoptic_pointcloud").value
         self.pose_array_topic = node.get_parameter("topic_names.pose_array").value
-        self.pointcloud_topic = node.get_parameter("topic_names.pointcloud").value
-        self.semantic_pointcloud_xyzi_topic = node.get_parameter("topic_names.semantic_pointcloud_xyzi").value
 
-        # --- Publishers ---
+        # Publishers
         self.pose_pub = node.create_publisher(PoseArray, self.pose_array_topic, 10)
-        self.pc_pub = node.create_publisher(PointCloud2, self.pointcloud_topic, 10)
-        self.semantic_pc_pub_xyzi = node.create_publisher(PointCloud2, self.semantic_pointcloud_xyzi_topic, 10)
+        self.slam_pub = node.create_publisher(PointCloud2, self.slam_topic, 10)
+        self.query_pub = node.create_publisher(PointCloud2, self.query_topic, 10)
+        self.semantic_pub = node.create_publisher(PointCloud2, self.semantic_topic, 10)
+        self.panoptic_pub = node.create_publisher(PointCloud2, self.panoptic_topic, 10)
 
-    def publish_pointcloud(self, frame, points, colors):
+    def _make_colored_cloud(self, frame, points, colors):
         if points is None or len(points) == 0:
-            return
-
+            return None
         colors_uint8 = (np.clip(colors, 0, 1) * 255).astype(np.uint8)
         rgb_uint32 = (
             (colors_uint8[:, 0].astype(np.uint32) << 16)
@@ -50,25 +57,53 @@ class PublisherManager:
             | colors_uint8[:, 2].astype(np.uint32)
         )
         cloud = [(x, y, z, rgb) for (x, y, z), rgb in zip(points, rgb_uint32)]
-
         fields = [
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
             PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
             PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
             PointField(name="rgb", offset=12, datatype=PointField.UINT32, count=1),
         ]
+        header = Header()
+        header.stamp = self.node.get_clock().now().to_msg()
+        header.frame_id = frame
+        return pc2.create_cloud(header, fields, cloud)
 
+    def publish_slam(self, frame, points, colors):
+        msg = self._make_colored_cloud(frame, points, colors)
+        if msg:
+            self.slam_pub.publish(msg)
+
+    def publish_query(self, frame, points, scores):
+        """Query cloud as XYZI (score intensity)."""
+        if points is None or len(points) == 0:
+            return
+        cloud = [(x, y, z, float(i)) for (x, y, z), i in zip(points, scores)]
+        fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
+        ]
         header = Header()
         header.stamp = self.node.get_clock().now().to_msg()
         header.frame_id = frame
         msg = pc2.create_cloud(header, fields, cloud)
-        self.pc_pub.publish(msg)
+        self.query_pub.publish(msg)
+
+    def publish_semantic(self, frame, points, colors):
+        msg = self._make_colored_cloud(frame, points, colors)
+        if msg:
+            self.semantic_pub.publish(msg)
+
+    def publish_panoptic(self, frame, points, colors):
+        msg = self._make_colored_cloud(frame, points, colors)
+        if msg:
+            self.panoptic_pub.publish(msg)
 
     def publish_pose_array(self, frame, poses):
         msg = PoseArray()
         msg.header.frame_id = frame
         msg.header.stamp = self.node.get_clock().now().to_msg()
-
         for T in poses:
             inv = np.linalg.inv(T)
             pose = Pose()
@@ -76,31 +111,7 @@ class PublisherManager:
             q = tf_transformations.quaternion_from_matrix(inv)
             pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = q
             msg.poses.append(pose)
-
         self.pose_pub.publish(msg)
-
-    def publish_semantic_pointcloud_xyzi(self, frame, points, scores):
-        """Publish semantic point cloud with intensity (score)."""
-        if points is None or len(points) == 0:
-            self.node.get_logger().warn("No semantic points to publish (XYZI)")
-            return
-
-        # Create (x, y, z, intensity) tuples
-        cloud = [(x, y, z, float(i)) for (x, y, z), i in zip(points, scores)]
-
-        fields = [
-            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1)
-        ]
-
-        header = Header()
-        header.stamp = self.node.get_clock().now().to_msg()
-        header.frame_id = frame
-
-        msg = pc2.create_cloud(header, fields, cloud)
-        self.semantic_pc_pub_xyzi.publish(msg)
 
 # --------------------------------------------------------------------------- #
 # Model Manager
@@ -246,7 +257,7 @@ class SemanticProcessor:
             # )
 
             # self.pub_mgr.publish_pointcloud("map", query_points, colors)
-            self.pub_mgr.publish_semantic_pointcloud_xyzi("map", query_points, scores)
+            self.pub_mgr.publish_query("map", query_points, scores)
 
             self.node.get_logger().info(
                 f"{BOLD}Query '{text_query}' finished: {len(query_points)} points published.{RESET}"
@@ -256,47 +267,43 @@ class SemanticProcessor:
             self.node.get_logger().error(f"{RED}Semantic query failed: {e}{RESET}")
 
     def process_auto(self):
-        """Automatically run semantic or panoptic query each PCL update."""
         model = self.model_mgr.model
         if model is None or not isinstance(model, BaseSLAM):
             self.node.get_logger().warn("Model not initialized or not BaseSLAM instance.")
             return
 
         try:
-            result = None
             mode = self.mode.lower()
-
             if mode == "panoptic" and hasattr(model, "panoptic_query"):
-                self.node.get_logger().info(f"{YELLOW}Running auto panoptic query...{RESET}")
                 result = model.panoptic_query(self.class_list)
             elif mode == "semantic" and hasattr(model, "semantic_query"):
-                self.node.get_logger().info(f"{YELLOW}Running auto semantic query...{RESET}")
                 result = model.semantic_query(self.class_list)
             elif mode == "query" and self.semantic_input:
-                text_query = self.semantic_input.text_query
-                self.node.get_logger().info(f"{YELLOW}Re-running query: '{text_query}'{RESET}")
-                result = model.query(text_query, topk=self.topk, only_poi=True)
+                result = model.query(self.semantic_input.text_query, topk=self.topk, only_poi=True)
             else:
                 return
 
-            if not isinstance(result, tuple):
-                self.node.get_logger().error("Invalid query return type.")
+            if not isinstance(result, tuple) or len(result) not in (2, 4):
+                self.node.get_logger().warn("Invalid query result type.")
                 return
 
             if len(result) == 2:
                 points, colors = result
-            elif len(result) == 4:
-                points, colors, instance_ids, class_names = result
+                scores = np.zeros(len(points), dtype=np.float32)
             else:
-                self.node.get_logger().warn(f"Unexpected query return length: {len(result)}")
-                return
+                points, colors, scores, _ = result
 
             if points is None or len(points) == 0:
                 self.node.get_logger().warn(f"{mode.capitalize()} query returned no points.")
                 return
 
-            # --- Publish only segmented colorful map ---
-            self.pub_mgr.publish_pointcloud("map", points, colors)
+            if mode == "query":
+                self.pub_mgr.publish_query("map", points, scores)
+            elif mode == "semantic":
+                self.pub_mgr.publish_semantic("map", points, colors)
+            elif mode == "panoptic":
+                self.pub_mgr.publish_panoptic("map", points, colors)
+
             self.node.get_logger().info(f"{mode.capitalize()} map published ({len(points)} points).")
 
         except Exception as e:
@@ -372,19 +379,18 @@ class OpenFusionNode(Node):
         if not model:
             return
         points, colors = model.point_state.get_pc()
-        self.pub_mgr.publish_pointcloud("map", points, colors)
+        self.pub_mgr.publish_slam("map", points, colors)
 
     def update_pose(self):
         # Measure start time for overrun detection
         start = time.time()
 
-        model = self.model_mgr.model
         if not self.model_loaded:
             return
         data = self.robot.get_openfusion_input()
         if data:
-            model.append_pose(data)
-        self.pub_mgr.publish_pose_array("map", model.point_state.poses)
+            self.model_mgr.append_pose(data)
+        self.pub_mgr.publish_pose_array("map", self.model_mgr.model.point_state.poses)
 
         # Check for timer overruns
         elapsed = time.time() - start
