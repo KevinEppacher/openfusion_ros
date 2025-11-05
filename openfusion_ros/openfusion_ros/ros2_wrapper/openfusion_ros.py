@@ -17,6 +17,7 @@ from openfusion_ros.utils.utils import prepare_openfusion_input
 from openfusion_ros.ros2_wrapper.utils import is_pose_unique, map_scores_to_colors
 from openfusion_ros.slam import build_slam, BaseSLAM
 from multimodal_query_msgs.msg import SemanticPrompt
+from std_srvs.srv import Trigger
 
 # --------------------------------------------------------------------------- #
 # Publisher Manager
@@ -338,6 +339,13 @@ class OpenFusionNode(Node):
         self.timer_pcl = self.create_timer(self.pcl_period, self.publish_pcl)
         self.timer_pose = self.create_timer(self.update_pose_period, self.update_pose)
 
+        # Services for semantic & panoptic triggers
+        self.semantic_srv = self.create_service(
+            Trigger, "run_semantic_map", self.run_semantic_cb)
+        self.panoptic_srv = self.create_service(
+            Trigger, "run_panoptic_map", self.run_panoptic_cb)
+        self.get_logger().info("Semantic & panoptic trigger services ready.")
+
         # Internal timing state
         self.last_pcl_start = 0.0
         self.last_pose_start = 0.0
@@ -358,49 +366,25 @@ class OpenFusionNode(Node):
         self.get_logger().info(f"{BLUE}{BOLD}Prompt received: {msg.text_query}{RESET}")
 
     def publish_pcl(self):
-        start = time.time()
-
         if not self.model_loaded:
             return
-
         model = self.model_mgr.model
         if not model:
             return
-
-        mode = self.semantic_proc.mode.lower()
-
-        # --- Semantic or Panoptic Mode: publish only segmented map ---
-        if mode in ["semantic", "panoptic"]:
-            self.semantic_proc.process_auto()
-            self.pub_mgr.publish_pose_array("map", model.point_state.poses)
-            elapsed = time.time() - start
-            if elapsed > self.pcl_period:
-                self.get_logger().warn(
-                    f"[publish_pcl] exceeded timer period: {elapsed:.3f}s > {self.pcl_period:.3f}s"
-                )
-            return
-
-        # --- Default or Query Mode: publish raw geometry + optional query ---
         points, colors = model.point_state.get_pc()
         self.pub_mgr.publish_pointcloud("map", points, colors)
-        self.pub_mgr.publish_pose_array("map", model.point_state.poses)
-        self.semantic_proc.process_auto()
-
-        elapsed = time.time() - start
-        if elapsed > self.pcl_period:
-            self.get_logger().warn(
-                f"[publish_pcl] exceeded timer period: {elapsed:.3f}s > {self.pcl_period:.3f}s"
-            )
 
     def update_pose(self):
         # Measure start time for overrun detection
         start = time.time()
 
+        model = self.model_mgr.model
         if not self.model_loaded:
             return
         data = self.robot.get_openfusion_input()
         if data:
-            self.model_mgr.append_pose(data)
+            model.append_pose(data)
+        self.pub_mgr.publish_pose_array("map", model.point_state.poses)
 
         # Check for timer overruns
         elapsed = time.time() - start
@@ -409,3 +393,25 @@ class OpenFusionNode(Node):
                 f"[update_pose] exceeded timer period: "
                 f"{elapsed:.3f}s > {self.update_pose_period:.3f}s"
             )
+
+    def run_semantic_cb(self, request, response):
+        try:
+            self.semantic_proc.mode = "semantic"
+            self.semantic_proc.process_auto()
+            response.success = True
+            response.message = "Semantic map generation completed."
+        except Exception as e:
+            response.success = False
+            response.message = f"Semantic map failed: {e}"
+        return response
+
+    def run_panoptic_cb(self, request, response):
+        try:
+            self.semantic_proc.mode = "panoptic"
+            self.semantic_proc.process_auto()
+            response.success = True
+            response.message = "Panoptic map generation completed."
+        except Exception as e:
+            response.success = False
+            response.message = f"Panoptic map failed: {e}"
+        return response
