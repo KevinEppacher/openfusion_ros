@@ -1,6 +1,5 @@
 import time
 import threading
-from turtle import mode
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import PoseArray, Pose
@@ -12,8 +11,7 @@ import os
 import json
 import open3d as o3d
 
-from openfusion_ros.utils import BLUE, YELLOW, RED, BOLD, RESET
-from openfusion_ros.ros2_wrapper.camera import CamInfo
+from openfusion_ros.utils import BLUE, YELLOW, RED, GREEN, BOLD, RESET
 from openfusion_ros.ros2_wrapper.robot import Robot
 from openfusion_ros.utils.utils import prepare_openfusion_input
 from openfusion_ros.ros2_wrapper.utils import is_pose_unique, map_scores_to_colors
@@ -22,55 +20,93 @@ from multimodal_query_msgs.msg import SemanticPrompt
 from std_srvs.srv import Trigger
 
 # --------------------------------------------------------------------------- #
-# Semantic Map Saver
+# Semantic Map Saver (Dataset-aware)
 # --------------------------------------------------------------------------- #
 class SemanticMapSaver:
-    """Handles saving semantic or panoptic point clouds with class mappings."""
+    """Handles saving semantic or panoptic point clouds into the dataset structure."""
 
     def __init__(self, node):
         self.node = node
-        node.declare_parameter("output.semantic_map_dir", "/app/data/semantic_maps")
-        self.output_dir = node.get_parameter("output.semantic_map_dir").value
 
-        # Ensure output directory exists
-        os.makedirs(self.output_dir, exist_ok=True)
-        self.node.get_logger().info(f"SemanticMapSaver initialized. Output dir: {self.output_dir}")
+        # ------------------------------------------------------------------ #
+        # Parameters (customizable per launch)
+        # ------------------------------------------------------------------ #
+        node.declare_parameter("dataset.root_dir", "/app/src/sage_evaluator/datasets/matterport_isaac")
+        node.declare_parameter("dataset.scene_name", "00809-Qpor2mEya8F")
+        node.declare_parameter("dataset.annotation_version", "v1.0")
+
+        self.root_dir = node.get_parameter("dataset.root_dir").value
+        self.scene_name = node.get_parameter("dataset.scene_name").value
+        self.annotation_version = node.get_parameter("dataset.annotation_version").value
+
+        # ------------------------------------------------------------------ #
+        # Derived paths
+        # ------------------------------------------------------------------ #
+        self.scene_dir = os.path.join(self.root_dir, self.scene_name)
+        self.annotation_dir = os.path.join(self.scene_dir, "annotations", self.annotation_version)
+
+        # Ensure directory structure exists
+        os.makedirs(self.annotation_dir, exist_ok=True)
+
+        self.node.get_logger().info(
+            f"SemanticMapSaver initialized:\n"
+            f"  Scene: {self.scene_name}\n"
+            f"  Annotation version: {self.annotation_version}\n"
+            f"  Output directory: {self.annotation_dir}"
+        )
 
     def save(self, points, colors, class_ids, class_list, filename_prefix="semantic_map"):
-        """Save semantic pointcloud and class mapping."""
+        """Save semantic point cloud and class mapping into dataset structure."""
+
         if points is None or len(points) == 0:
-            self.node.get_logger().warn("No points to save.")
+            self.node.get_logger().warn("No points to save — skipping.")
             return
 
-        # --- Build filenames ---
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        ply_path = os.path.join(self.output_dir, f"{filename_prefix}_{timestamp}.ply")
-        json_path = os.path.join(self.output_dir, f"{filename_prefix}_{timestamp}.json")
+        ply_path = os.path.join(self.annotation_dir, f"{filename_prefix}_{timestamp}.ply")
+        json_path = os.path.join(self.annotation_dir, f"{filename_prefix}_{timestamp}.json")
 
-        # --- Ensure class_ids is Nx1 shape ---
+        # Ensure class_ids have shape (N,1)
         if class_ids.ndim == 1:
             class_ids = class_ids.reshape(-1, 1)
 
-        # --- Save pointcloud ---
+        # ------------------------------------------------------------------ #
+        # Save PLY file
+        # ------------------------------------------------------------------ #
         try:
             pcd = o3d.t.geometry.PointCloud()
             pcd.point["positions"] = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32)
             pcd.point["colors"] = o3d.core.Tensor(colors, dtype=o3d.core.Dtype.Float32)
             pcd.point["class_id"] = o3d.core.Tensor(class_ids, dtype=o3d.core.Dtype.Int32)
+
             o3d.t.io.write_point_cloud(ply_path, pcd)
-            self.node.get_logger().info(f"Saved semantic point cloud → {ply_path}")
+            self.node.get_logger().info(f"{GREEN} Saved semantic point cloud → {ply_path} {RESET}")
         except Exception as e:
-            self.node.get_logger().error(f"Failed to save PLY file: {e}")
+            self.node.get_logger().error(f"{RED} Failed to save PLY: {e} {RESET}")
             return
 
-        # --- Save class mapping ---
+        # ------------------------------------------------------------------ #
+        # Save JSON mapping
+        # ------------------------------------------------------------------ #
         try:
-            class_mapping = {i: name for i, name in enumerate(class_list)}
+            class_mapping = {int(i): str(name) for i, name in enumerate(class_list)}
             with open(json_path, "w") as f:
                 json.dump(class_mapping, f, indent=2)
-            self.node.get_logger().info(f"Saved class mapping → {json_path}")
+            self.node.get_logger().info(f"{GREEN} Saved class mapping → {json_path} {RESET}")
         except Exception as e:
-            self.node.get_logger().error(f"Failed to save JSON mapping: {e}")
+            self.node.get_logger().error(f"{RED} Failed to save JSON mapping: {e} {RESET}")
+
+        # ------------------------------------------------------------------ #
+        # Optional: update 'current' symlink
+        # ------------------------------------------------------------------ #
+        current_link = os.path.join(self.scene_dir, "annotations", "current")
+        try:
+            if os.path.islink(current_link) or os.path.exists(current_link):
+                os.remove(current_link)
+            os.symlink(self.annotation_dir, current_link)
+            self.node.get_logger().info(f"{BLUE} Updated 'current' annotation link → {current_link} {RESET}")
+        except Exception as e:
+            self.node.get_logger().warn(f"{YELLOW} Could not update 'current' link: {e} {RESET}")
 
 # --------------------------------------------------------------------------- #
 # Publisher Manager
@@ -235,8 +271,6 @@ class FusionModelManager:
         self.model.compute_state(encode_image=(self.iteration % self.encode_image_every_n_frames == 0))
 
 class SemanticProcessor:
-    """Handles semantic and panoptic queries for OpenFusion models."""
-
     def __init__(self, node, model_mgr, pub_mgr):
         self.node = node
         self.model_mgr = model_mgr
@@ -244,28 +278,38 @@ class SemanticProcessor:
         self.saver = SemanticMapSaver(node)
 
         # --- Declare configurable parameters ------------------------------
-        self.mode = self.declare_param("semantic.mode", "query")  # query | semantic | panoptic
+        self.mode = self.declare_param("semantic.mode", "query")
         self.topk = self.declare_param("semantic.topk", 3)
         self.min_score = self.declare_param("semantic.min_score", 0.1)
         self.max_score = self.declare_param("semantic.max_score", 1.0)
-        self.class_list = self.declare_param(
-            "semantic.class_list",
-            [
-                "vase", "table", "tv shelf", "curtain", "wall", "floor", "ceiling",
-                "door", "tv", "room plant", "light", "sofa", "cushion", "wall paint", "chair"
-            ],
+
+        # Class list configuration
+        class_list_path = self.declare_param("semantic.class_list_path", "")
+
+        default_class_list = [
+            "vase", "table", "tv shelf", "curtain", "wall", "floor", "ceiling",
+            "door", "tv", "room plant", "light", "sofa", "cushion", "wall paint", "chair"
+        ]
+
+        # --- Load class list dynamically ---
+        self.class_list = self.load_class_list(
+            class_list_path=class_list_path,
+            default_list=default_class_list
         )
 
         # Store latest prompt input
         self.semantic_input = None
 
+        # --- Log summary ---
         self.node.get_logger().info(
             f"{BLUE}{BOLD}SemanticProcessor initialized:{RESET}\n"
             f"  mode: {YELLOW}{self.mode}{RESET}\n"
             f"  topk: {YELLOW}{self.topk}{RESET}\n"
             f"  score range: {YELLOW}{self.min_score} – {self.max_score}{RESET}\n"
-            f"  class_list: {YELLOW}{', '.join(self.class_list)}{RESET}"
+            f"  class source: {YELLOW}{'JSON file' if class_list_path else 'ROS param'}{RESET}\n"
+            f"  classes: {YELLOW}{', '.join(self.class_list[:10])}... ({len(self.class_list)} total){RESET}"
         )
+
 
     def declare_param(self, name, default):
         if not self.node.has_parameter(name):
@@ -366,6 +410,30 @@ class SemanticProcessor:
         except Exception as e:
             self.node.get_logger().error(f"{RED}Auto query failed: {e}{RESET}")
 
+    def load_class_list(self, class_list_path: str, default_list: list):
+        """Load class list from JSON file if available, otherwise use parameter or default."""
+        # 1. If JSON path is given and valid, try to load
+        if class_list_path and os.path.exists(class_list_path):
+            try:
+                with open(class_list_path, "r") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    self.node.get_logger().info(
+                        f"{BOLD}Loaded class list from JSON file:{RESET} {class_list_path}"
+                    )
+                    return loaded
+                else:
+                    self.node.get_logger().warn(
+                        f"Invalid format in {class_list_path}, expected a list. Using default class list."
+                    )
+                    return default_list
+            except Exception as e:
+                self.node.get_logger().error(f"Failed to load class list from {class_list_path}: {e}")
+                return default_list
+
+        # 2. If JSON path not provided or invalid → use declared param or fallback
+        return self.declare_param("semantic.class_list", default_list)
+    
 # --------------------------------------------------------------------------- #
 # Main Node
 # --------------------------------------------------------------------------- #
