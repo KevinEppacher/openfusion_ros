@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import time
 import threading
 from rclpy.node import Node
@@ -10,6 +11,9 @@ import tf_transformations
 import os
 import json
 import open3d as o3d
+from nav_msgs.msg import OccupancyGrid
+import re
+import subprocess
 
 from openfusion_ros.utils import BLUE, YELLOW, RED, GREEN, BOLD, RESET
 from openfusion_ros.ros2_wrapper.robot import Robot
@@ -19,29 +23,11 @@ from openfusion_ros.slam import build_slam, BaseSLAM
 from multimodal_query_msgs.msg import SemanticPrompt
 from std_srvs.srv import Trigger
 
-#!/usr/bin/env python3
-import os
-import json
-import time
-import rclpy
-import open3d as o3d
-from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid
-from std_msgs.msg import Header
-
-# ANSI colors (optional for console)
-GREEN = "\033[92m"
-RED = "\033[91m"
-BLUE = "\033[94m"
-YELLOW = "\033[93m"
-RESET = "\033[0m"
-
-
 # --------------------------------------------------------------------------- #
-# Semantic Map Saver (Dataset-aware + 2D SLAM map)
+# Semantic Map Saver (Auto-Versioning + SLAM Snapshot)
 # --------------------------------------------------------------------------- #
 class SemanticMapSaver:
-    """Handles saving semantic point clouds and 2D SLAM maps into dataset structure."""
+    """Handles saving semantic point clouds and SLAM maps into dataset structure with versioning."""
 
     def __init__(self, node: Node):
         self.node = node
@@ -51,45 +37,55 @@ class SemanticMapSaver:
         # ------------------------------------------------------------------ #
         node.declare_parameter("dataset.root_dir", "/app/src/sage_evaluator/datasets/matterport_isaac")
         node.declare_parameter("dataset.scene_name", "00809-Qpor2mEya8F")
-        node.declare_parameter("dataset.annotation_version", "v1.0")
         node.declare_parameter("slam.map_topic", "/map")
 
         self.root_dir = node.get_parameter("dataset.root_dir").value
         self.scene_name = node.get_parameter("dataset.scene_name").value
-        self.annotation_version = node.get_parameter("dataset.annotation_version").value
         self.map_topic = node.get_parameter("slam.map_topic").value
 
-        # ------------------------------------------------------------------ #
         # Derived paths
-        # ------------------------------------------------------------------ #
         self.scene_dir = os.path.join(self.root_dir, self.scene_name)
-        self.annotation_dir = os.path.join(self.scene_dir, "annotations", self.annotation_version)
+        self.annotations_dir = os.path.join(self.scene_dir, "annotations")
+        os.makedirs(self.annotations_dir, exist_ok=True)
+
+        # Auto version detection
+        self.annotation_version = self._get_next_version()
+        self.annotation_dir = os.path.join(self.annotations_dir, self.annotation_version)
         os.makedirs(self.annotation_dir, exist_ok=True)
 
-        # Latest occupancy grid cache
-        self.latest_map = None
-        self.map_sub = node.create_subscription(OccupancyGrid, self.map_topic, self._map_callback, 10)
-
-        self.node.get_logger().info(
-            f"SemanticMapSaver initialized:\n"
+        node.get_logger().info(
+            f"{BLUE}SemanticMapSaver initialized:{RESET}\n"
             f"  Scene: {self.scene_name}\n"
-            f"  Annotation version: {self.annotation_version}\n"
-            f"  Output directory: {self.annotation_dir}\n"
-            f"  Subscribed to map topic: {self.map_topic}"
+            f"  New Annotation version: {self.annotation_version}\n"
+            f"  Output directory: {self.annotation_dir}"
         )
 
     # ------------------------------------------------------------------ #
-    # SLAM map subscriber
+    # Detect latest version and increment it (e.g., v1.0 → v1.1)
     # ------------------------------------------------------------------ #
-    def _map_callback(self, msg: OccupancyGrid):
-        """Cache latest map message."""
-        self.latest_map = msg
+    def _get_next_version(self):
+        existing = [
+            d for d in os.listdir(self.annotations_dir)
+            if re.match(r"^v\d+\.\d+$", d) and os.path.isdir(os.path.join(self.annotations_dir, d))
+        ]
+        if not existing:
+            return "v1.0"
+
+        # Sort by numeric version (major.minor)
+        def parse_version(v):
+            major, minor = v[1:].split(".")
+            return int(major), int(minor)
+
+        existing.sort(key=parse_version)
+        last_major, last_minor = parse_version(existing[-1])
+        new_version = f"v{last_major}.{last_minor + 1}"
+        return new_version
 
     # ------------------------------------------------------------------ #
-    # Save semantic map + 2D SLAM snapshot
+    # Save Semantic Map + SLAM map
     # ------------------------------------------------------------------ #
     def save(self, points, colors, class_ids, class_list, filename_prefix="semantic_map"):
-        """Save semantic point cloud, class mapping, and latest 2D SLAM map."""
+        """Save semantic pointcloud, class mapping, and SLAM map using Nav2 CLI."""
 
         if points is None or len(points) == 0:
             self.node.get_logger().warn("No points to save — skipping.")
@@ -98,21 +94,18 @@ class SemanticMapSaver:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         ply_path = os.path.join(self.annotation_dir, f"{filename_prefix}_{timestamp}.ply")
         json_path = os.path.join(self.annotation_dir, f"{filename_prefix}_{timestamp}.json")
-        map_path = os.path.join(self.annotation_dir, f"slam_map_{timestamp}.pgm")
-        yaml_path = os.path.join(self.annotation_dir, f"slam_map_{timestamp}.yaml")
+        map_base = os.path.join(self.annotation_dir, f"slam_map_{timestamp}")
 
         # ------------------------------------------------------------------ #
-        # Save PLY file
+        # Save Semantic Pointcloud
         # ------------------------------------------------------------------ #
         try:
             if class_ids.ndim == 1:
                 class_ids = class_ids.reshape(-1, 1)
-
             pcd = o3d.t.geometry.PointCloud()
             pcd.point["positions"] = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32)
             pcd.point["colors"] = o3d.core.Tensor(colors, dtype=o3d.core.Dtype.Float32)
             pcd.point["class_id"] = o3d.core.Tensor(class_ids, dtype=o3d.core.Dtype.Int32)
-
             o3d.t.io.write_point_cloud(ply_path, pcd)
             self.node.get_logger().info(f"{GREEN}Saved semantic point cloud → {ply_path}{RESET}")
         except Exception as e:
@@ -120,7 +113,7 @@ class SemanticMapSaver:
             return
 
         # ------------------------------------------------------------------ #
-        # Save JSON mapping
+        # Save Class Mapping
         # ------------------------------------------------------------------ #
         try:
             class_mapping = {int(i): str(name) for i, name in enumerate(class_list)}
@@ -131,42 +124,26 @@ class SemanticMapSaver:
             self.node.get_logger().error(f"{RED}Failed to save JSON mapping: {e}{RESET}")
 
         # ------------------------------------------------------------------ #
-        # Save latest SLAM occupancy grid
+        # Save SLAM Map via CLI (identical to Nav2 behavior)
         # ------------------------------------------------------------------ #
-        if self.latest_map is not None:
-            try:
-                import numpy as np
-                import cv2
-
-                grid = np.array(self.latest_map.data, dtype=np.int8).reshape(
-                    (self.latest_map.info.height, self.latest_map.info.width)
-                )
-                grid_img = np.zeros_like(grid, dtype=np.uint8)
-                grid_img[grid == 0] = 254        # free
-                grid_img[grid == 100] = 0        # occupied
-                grid_img[grid == -1] = 205       # unknown
-
-                # Save PGM image
-                cv2.imwrite(map_path, grid_img)
-
-                # Save metadata YAML (for RViz / map_server compatibility)
-                with open(yaml_path, "w") as f:
-                    f.write(f"image: {os.path.basename(map_path)}\n")
-                    f.write(f"resolution: {self.latest_map.info.resolution}\n")
-                    f.write(f"origin: [{self.latest_map.info.origin.position.x}, "
-                            f"{self.latest_map.info.origin.position.y}, 0.0]\n")
-                    f.write("negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n")
-
-                self.node.get_logger().info(f"{GREEN}Saved SLAM map snapshot → {map_path}{RESET}")
-            except Exception as e:
-                self.node.get_logger().error(f"{RED}Failed to save SLAM map: {e}{RESET}")
-        else:
-            self.node.get_logger().warn("No SLAM map received yet — skipping map export.")
+        try:
+            cmd = [
+                "ros2", "run", "nav2_map_server", "map_saver_cli",
+                "-f", map_base,
+                "--ros-args", "-p", f"topic:={self.map_topic}"
+            ]
+            self.node.get_logger().info(f"{BLUE}Running map_saver_cli for map export...{RESET}")
+            subprocess.run(cmd, check=True)
+            self.node.get_logger().info(f"{GREEN}Saved SLAM map using map_saver_cli → {map_base}.pgm{RESET}")
+        except subprocess.CalledProcessError as e:
+            self.node.get_logger().error(f"{RED}map_saver_cli failed: {e}{RESET}")
+        except FileNotFoundError:
+            self.node.get_logger().error(f"{RED}map_saver_cli not found — is nav2_map_server installed?{RESET}")
 
         # ------------------------------------------------------------------ #
-        # Optional: update 'current' symlink
+        # Update 'current' symlink
         # ------------------------------------------------------------------ #
-        current_link = os.path.join(self.scene_dir, "annotations", "current")
+        current_link = os.path.join(self.annotations_dir, "current")
         try:
             if os.path.islink(current_link) or os.path.exists(current_link):
                 os.remove(current_link)
@@ -174,6 +151,7 @@ class SemanticMapSaver:
             self.node.get_logger().info(f"{BLUE}Updated 'current' annotation link → {current_link}{RESET}")
         except Exception as e:
             self.node.get_logger().warn(f"{YELLOW}Could not update 'current' link: {e}{RESET}")
+
 
 
 # --------------------------------------------------------------------------- #

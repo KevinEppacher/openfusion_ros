@@ -6,7 +6,7 @@ openfusion_ros:
       dataset.annotation_version: v1.0
       dataset.root_dir: /app/src/sage_evaluator/datasets/matterport_isaac
       dataset.scene_name: 00809-Qpor2mEya8F
-      encode_image_every_n_frames: 20
+      encode_image_every_n_frames: 1
       robot.camera.debug_images: false
       robot.camera.depth_topic: /depth/throttled
       robot.camera.qos_depth: 10
