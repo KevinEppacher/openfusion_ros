@@ -1,10 +1,10 @@
 openfusion_ros:
   openfusion_ros:
     ros__parameters:
-      append_pose.max_rotation_deg: 30.0
-      append_pose.min_translation: 0.5
+      append_pose.max_rotation_deg: 45.0
+      append_pose.min_translation: 1.0
       dataset.annotation_version: v1.0
-      dataset.root_dir: /app/src/sage_evaluator/datasets/matterport_isaac
+      dataset.root_dir: /app/src/sage_evaluator/sage_datasets/matterport_isaac
       dataset.scene_name: 00809-Qpor2mEya8F
       encode_image_every_n_frames: 1
       robot.camera.debug_images: false

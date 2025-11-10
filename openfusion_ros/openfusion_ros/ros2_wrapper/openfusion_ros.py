@@ -97,6 +97,29 @@ class SemanticMapSaver:
         map_base = os.path.join(self.annotation_dir, f"slam_map_{timestamp}")
 
         # ------------------------------------------------------------------ #
+        # Save default robot_start_pose.json
+        # ------------------------------------------------------------------ #
+        try:
+            start_pose_path = os.path.join(self.annotation_dir, "robot_start_pose.json")
+            if not os.path.exists(start_pose_path):
+                start_pose = {
+                    "x": 0.0,
+                    "y": 0.0,
+                    "z": 0.0,
+                    "qx": 0.0,
+                    "qy": 0.0,
+                    "qz": 0.0,
+                    "qw": 1.0
+                }
+                with open(start_pose_path, "w") as f:
+                    json.dump(start_pose, f, indent=2)
+                self.node.get_logger().info(f"{GREEN}Created zeroed robot_start_pose.json → {start_pose_path}{RESET}")
+            else:
+                self.node.get_logger().info(f"{YELLOW}robot_start_pose.json already exists → {start_pose_path}{RESET}")
+        except Exception as e:
+            self.node.get_logger().error(f"{RED}Failed to save robot_start_pose.json: {e}{RESET}")
+
+        # ------------------------------------------------------------------ #
         # Save Semantic Pointcloud
         # ------------------------------------------------------------------ #
         try:
