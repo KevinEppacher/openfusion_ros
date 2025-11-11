@@ -14,6 +14,7 @@ import open3d as o3d
 from nav_msgs.msg import OccupancyGrid
 import re
 import subprocess
+from rcl_interfaces.msg import SetParametersResult
 
 from openfusion_ros.utils import BLUE, YELLOW, RED, GREEN, BOLD, RESET
 from openfusion_ros.ros2_wrapper.robot import Robot
@@ -283,10 +284,12 @@ class FusionModelManager:
 
         node.declare_parameter("append_pose.min_translation", 0.05)
         node.declare_parameter("append_pose.max_rotation_deg", 5.0)
+        node.declare_parameter("append_pose.max_poses", 1000)
         node.declare_parameter("encode_image_every_n_frames", 10)
 
         self.min_trans = node.get_parameter("append_pose.min_translation").value
         self.max_rot_deg = node.get_parameter("append_pose.max_rotation_deg").value
+        self.max_poses = node.get_parameter("append_pose.max_poses").value
         self.encode_image_every_n_frames = node.get_parameter("encode_image_every_n_frames").value
 
     def load(self):
@@ -326,14 +329,39 @@ class FusionModelManager:
         self.model = build_slam(args, intrinsics, params)
         self.node.get_logger().info("SLAM model loaded successfully.")
         return True
+    
+    def _on_param_update(self, params):
+        for p in params:
+            if p.name == "append_pose.min_translation":
+                self.min_trans = float(p.value)
+                self.node.get_logger().info(f"Updated min_translation → {self.min_trans:.3f}")
+            elif p.name == "append_pose.max_rotation_deg":
+                self.max_rot_deg = float(p.value)
+                self.node.get_logger().info(f"Updated max_rotation_deg → {self.max_rot_deg:.2f}")
+            elif p.name == "append_pose.max_poses":
+                self.max_poses = int(p.value)
+                self.node.get_logger().info(f"Updated max_poses → {self.max_poses}")
+            elif p.name == "encode_image_every_n_frames":
+                self.encode_image_every_n_frames = int(p.value)
+                self.node.get_logger().info(f"Updated encode_image_every_n_frames → {self.encode_image_every_n_frames}")
+
+        return SetParametersResult(successful=True)
 
     def append_pose(self, pose_data):
         pose, rgb, depth = pose_data
         T_camera_map = np.linalg.inv(pose)
-        if not is_pose_unique(
+        pose_unique = is_pose_unique(
             T_camera_map, self.model.point_state.poses,
-            trans_diff_threshold=self.min_trans, fov_deg=self.max_rot_deg
-        ): return
+            trans_diff_threshold=self.min_trans,
+            fov_deg=self.max_rot_deg
+        )
+
+        if not pose_unique:
+            self.node.get_logger().info("Pose not unique enough; skipping append.")
+            return
+        if len(self.model.point_state.poses) >= self.max_poses:
+            self.node.get_logger().warn("Maximum number of poses reached; skipping further appends.")
+            return
         self.iteration += 1
         self.model.io.update(rgb, depth, T_camera_map)
         self.model.vo()
