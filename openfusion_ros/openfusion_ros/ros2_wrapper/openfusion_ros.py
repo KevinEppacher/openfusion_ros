@@ -39,10 +39,12 @@ class SemanticMapSaver:
         node.declare_parameter("dataset.root_dir", "/app/src/sage_evaluator/datasets/matterport_isaac")
         node.declare_parameter("dataset.scene_name", "00809-Qpor2mEya8F")
         node.declare_parameter("slam.map_topic", "/map")
+        node.declare_parameter("slam.free_thresh", 0.25)  # <-- new parameter
 
         self.root_dir = node.get_parameter("dataset.root_dir").value
         self.scene_name = node.get_parameter("dataset.scene_name").value
         self.map_topic = node.get_parameter("slam.map_topic").value
+        self.free_thresh = node.get_parameter("slam.free_thresh").value
 
         # Derived paths
         self.scene_dir = os.path.join(self.root_dir, self.scene_name)
@@ -58,7 +60,8 @@ class SemanticMapSaver:
             f"{BLUE}SemanticMapSaver initialized:{RESET}\n"
             f"  Scene: {self.scene_name}\n"
             f"  New Annotation version: {self.annotation_version}\n"
-            f"  Output directory: {self.annotation_dir}"
+            f"  Output directory: {self.annotation_dir}\n"
+            f"  Free threshold for map export: {self.free_thresh}"
         )
 
     # ------------------------------------------------------------------ #
@@ -148,15 +151,18 @@ class SemanticMapSaver:
             self.node.get_logger().error(f"{RED}Failed to save JSON mapping: {e}{RESET}")
 
         # ------------------------------------------------------------------ #
-        # Save SLAM Map via CLI (identical to Nav2 behavior)
+        # Save SLAM Map via CLI with configurable free_thresh
         # ------------------------------------------------------------------ #
         try:
             cmd = [
                 "ros2", "run", "nav2_map_server", "map_saver_cli",
                 "-f", map_base,
-                "--ros-args", "-p", f"topic:={self.map_topic}"
+                "--ros-args",
+                "-p", f"topic:={self.map_topic}",
+                "-p", f"free_thresh:={self.free_thresh}",
+                "-p", "mode:=trinary"
             ]
-            self.node.get_logger().info(f"{BLUE}Running map_saver_cli for map export...{RESET}")
+            self.node.get_logger().info(f"{BLUE}Running map_saver_cli for map export (free_thresh={self.free_thresh})...{RESET}")
             subprocess.run(cmd, check=True)
             self.node.get_logger().info(f"{GREEN}Saved SLAM map using map_saver_cli → {map_base}.pgm{RESET}")
         except subprocess.CalledProcessError as e:
