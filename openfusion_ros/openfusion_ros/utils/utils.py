@@ -11,9 +11,16 @@ def prepare_openfusion_input(cam_info : CamInfo,
                              algorithm : str = "vlfusion",
                              voxel_size : float = 0.01953125,
                              block_resolution : int = 8,
-                             block_count : int = 20000):
+                             block_count : int = 20000,
+                             img_size=None,
+                             input_size=None
+                             ):
     
-    width, height = cam_info.get_size()
+    # Get camera resolution from cam_info if not given
+    if img_size is None:
+        img_size = (cam_info.height, cam_info.width) if cam_info else (480, 640)
+    if input_size is None:
+        input_size = img_size
 
     params = {
     'path': '/app/src/OpenFusion/sample/scannet/scene0010_01',
@@ -22,8 +29,8 @@ def prepare_openfusion_input(cam_info : CamInfo,
     'voxel_size': voxel_size,
     'block_resolution': block_resolution,
     'block_count': block_count,
-    'img_size': (width, height),
-    'input_size': (width, height)  # Keep same if no resizing
+    'img_size': img_size,
+    'input_size': input_size  # Keep same if no resizing
     }
 
     args = Namespace(

@@ -1,123 +1,132 @@
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
-from tf_transformations import translation_from_matrix, quaternion_from_matrix
-from sensor_msgs.msg import CameraInfo
 import numpy as np
-from collections import deque
-from rclpy.time import Duration, Time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-
-from openfusion_ros.utils import BLUE, RED, YELLOW, BOLD, RESET, RED
-from openfusion_ros.utils.conversions import transform_to_matrix
+from openfusion_ros.utils import BLUE, YELLOW, BOLD, RESET
 from openfusion_ros.utils.opencv import show_ros_image, show_ros_depth_image
+import rclpy
 
 class CamInfo:
-    def __init__(self, cam_info_msg: CameraInfo = None):
-        self.cam_info_msg = cam_info_msg
+    def __init__(self, msg: CameraInfo = None):
+        self.msg = msg
 
     def get_intrinsics(self):
-        if not self.cam_info_msg:
+        if not self.msg:
             return None
-        return np.array(self.cam_info_msg.k, dtype=np.float64).reshape(3, 3)
+        return np.array(self.msg.k, dtype=np.float64).reshape(3, 3)
 
     def get_size(self):
-        if not self.cam_info_msg:
+        if not self.msg:
             return (0, 0)
-        return self.cam_info_msg.width, self.cam_info_msg.height
-    
-    def get_horizontal_fov_deg(self):
-        if not self.cam_info_msg:
-            return 70.0  # fallback
-        fx = self.cam_info_msg.k[0]
-        width = self.cam_info_msg.width
-        fov_rad = 2 * np.arctan2(width, 2 * fx)
-        return np.degrees(fov_rad)
+        return self.msg.width, self.msg.height
+
+    def scale_to(self, new_width, new_height):
+        """Return a new CameraInfo with scaled intrinsics."""
+        if self.msg is None:
+            return None
+
+        scaled = CameraInfo()
+        scaled.header = self.msg.header
+        scaled.distortion_model = self.msg.distortion_model
+        scaled.d = list(self.msg.d)
+
+        scale_x = new_width / self.msg.width
+        scale_y = new_height / self.msg.height
+
+        K = np.array(self.msg.k, dtype=np.float64).reshape(3, 3)
+        K[0, 0] *= scale_x
+        K[1, 1] *= scale_y
+        K[0, 2] *= scale_x
+        K[1, 2] *= scale_y
+        scaled.k = K.flatten().tolist()
+
+        P = np.array(self.msg.p, dtype=np.float64).reshape(3, 4)
+        P[0, 0] *= scale_x
+        P[1, 1] *= scale_y
+        P[0, 2] *= scale_x
+        P[1, 2] *= scale_y
+        scaled.p = P.flatten().tolist()
+
+        scaled.width = int(new_width)
+        scaled.height = int(new_height)
+        return scaled
+
 
 class Camera:
+    """Camera interface with integrated CameraInfo subscription and resizing."""
+
     def __init__(self, node):
         self.node = node
         self.bridge = CvBridge()
-        self.rgb_topic = None
-        self.depth_topic = None
-        self.debug_images = False
 
+        # Declare parameters
+        self.rgb_topic = self.declare_param("robot.camera.rgb_topic", "/rgb")
+        self.depth_topic = self.declare_param("robot.camera.depth_topic", "/depth")
+        self.debug_images = self.declare_param("robot.camera.debug_images", False)
+        qos_reliability = self.declare_param("robot.camera.qos_reliability", "best_effort").lower()
+        qos_history = self.declare_param("robot.camera.qos_history", "keep_last").lower()
+        qos_depth = self.declare_param("robot.camera.qos_depth", 10)
+
+        self.print_parameters()
+
+        reliability = ReliabilityPolicy.RELIABLE if qos_reliability == "reliable" else ReliabilityPolicy.BEST_EFFORT
+        history = HistoryPolicy.KEEP_ALL if qos_history == "keep_all" else HistoryPolicy.KEEP_LAST
+        self.qos_profile = QoSProfile(reliability=reliability, history=history, depth=qos_depth)
+
+        # Subscribers
         self.rgb_msg = None
         self.depth_msg = None
+        self.camera_info = CamInfo()
+        self.camera_info_received = False
 
-    def on_configure(self):
-        self.node.get_logger().debug(f"{BLUE}{BOLD}Configuring Camera...{RESET}")
-
-        # Parameters
-        self.node.declare_parameter("robot.camera.rgb_topic", "/rgb")
-        self.node.declare_parameter("robot.camera.depth_topic", "/depth")
-        self.node.declare_parameter("robot.camera.debug_images", False)
-
-        self.node.declare_parameter("robot.camera.qos_reliability", "best_effort")
-        self.node.declare_parameter("robot.camera.qos_history", "keep_last")
-        self.node.declare_parameter("robot.camera.qos_depth", 10)
-
-        # Get values
-        self.rgb_topic = self.node.get_parameter("robot.camera.rgb_topic").value
-        self.depth_topic = self.node.get_parameter("robot.camera.depth_topic").value
-        self.debug_images = self.node.get_parameter("robot.camera.debug_images").value
-
-        qos_reliability = self.node.get_parameter("robot.camera.qos_reliability").value.lower()
-        qos_history = self.node.get_parameter("robot.camera.qos_history").value.lower()
-        qos_depth = self.node.get_parameter("robot.camera.qos_depth").value
-
-        reliability = (
-            ReliabilityPolicy.RELIABLE if qos_reliability == "reliable"
-            else ReliabilityPolicy.BEST_EFFORT
+        self.rgb_sub = node.create_subscription(
+            Image, self.rgb_topic, self.cb_rgb, self.qos_profile
         )
-        history = (
-            HistoryPolicy.KEEP_ALL if qos_history == "keep_all"
-            else HistoryPolicy.KEEP_LAST
+        self.depth_sub = node.create_subscription(
+            Image, self.depth_topic, self.cb_depth, self.qos_profile
         )
-
-        self.qos_profile = QoSProfile(
-            reliability=reliability,
-            history=history,
-            depth=qos_depth,
+        self.caminfo_sub = node.create_subscription(
+            CameraInfo, "/camera_info", self.cb_cam_info, self.qos_profile
         )
+        
+        self.node.get_logger().info(f"Subscribed to {self.rgb_topic}, {self.depth_topic}, and /camera_info")
 
+    # -----------------------------------------------------------------------
+    def declare_param(self, name, default):
+        if not self.node.has_parameter(name):
+            self.node.declare_parameter(name, default)
+        return self.node.get_parameter(name).value
+
+    def print_parameters(self):
         self.node.get_logger().info(
-            f"Camera configured with QoS(reliability={qos_reliability}, history={qos_history}, depth={qos_depth})"
+            f"{BLUE}{BOLD}Camera parameters:{RESET}\n"
+            f"  rgb_topic: {YELLOW}{self.rgb_topic}{RESET}\n"
+            f"  depth_topic: {YELLOW}{self.depth_topic}{RESET}\n"
+            f"  debug_images: {YELLOW}{self.debug_images}{RESET}\n"
         )
 
-    def on_activate(self):
-        self.node.get_logger().debug(f"{YELLOW}{BOLD}Activating Camera...{RESET}")
+    # -----------------------------------------------------------------------
+    def cb_cam_info(self, msg: CameraInfo):
+        if not self.camera_info_received:
+            self.camera_info = CamInfo(msg)
+            self.camera_info_received = True
+            self.node.get_logger().info(f"Received CameraInfo {msg.width}x{msg.height}")
 
-        self.rgb_sub = self.node.create_subscription(
-            Image, self.rgb_topic, self.rgb_callback, self.qos_profile
-        )
-        self.depth_sub = self.node.create_subscription(
-            Image, self.depth_topic, self.depth_callback, self.qos_profile
-        )
+    def wait_for_camera_info(self, timeout=5.0):
+        """Wait until a CameraInfo message is received."""
+        import time
+        start = time.time()
+        while not self.camera_info_received and time.time() - start < timeout:
+            time.sleep(0.1)
+        return self.camera_info_received
 
-        self.node.get_logger().info(
-            f"Subscribed to {self.rgb_topic} and {self.depth_topic}"
-        )
-
-    def on_deactivate(self):
-        self.node.get_logger().debug(f"{YELLOW}Deactivating Camera...{RESET}")
-        self.rgb_sub = None
-        self.depth_sub = None
-
-    def on_cleanup(self):
-        self.node.get_logger().debug(f"{BLUE}Cleaning up Camera...{RESET}")
-        self.rgb_msg = None
-        self.depth_msg = None
-
-    def on_shutdown(self):
-        self.node.get_logger().debug(f"{RED}{BOLD}Shutting down Camera...{RESET}")
-        self.on_cleanup()
-
-    def rgb_callback(self, msg: Image):
+    # -----------------------------------------------------------------------
+    def cb_rgb(self, msg: Image):
         self.rgb_msg = msg
         if self.debug_images:
             show_ros_image(msg, "RGB")
 
-    def depth_callback(self, msg: Image):
+    def cb_depth(self, msg: Image):
         self.depth_msg = msg
         if self.debug_images:
             show_ros_depth_image(msg, "Depth")
@@ -127,3 +136,21 @@ class Camera:
 
     def get_depth(self):
         return self.depth_msg
+
+    def get_resized_camera_info(self):
+        if not self.camera_info.msg:
+            return None
+        if self.depth_msg is None:
+            return None
+        return self.camera_info.scale_to(self.depth_msg.width, self.depth_msg.height)
+
+    def get_intrinsics(self):
+        info = self.get_resized_camera_info()
+        if not info:
+            return None
+        return np.array(info.k).reshape(3, 3)
+
+    def get_size(self):
+        if self.depth_msg is None:
+            return 0, 0
+        return self.depth_msg.width, self.depth_msg.height

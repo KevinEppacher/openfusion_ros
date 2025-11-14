@@ -851,8 +851,16 @@ class VLState(BaseState):
 
         cls = [cmap(np.argmax(np.bincount(m, weights=1/(1+d)))) for d, m in zip(dist, semseg[ind])]
         colors = np.array(cls)[:,:3]
-        return points, colors
+        # return points, colors
 
+        # Custom implementation: Instead of only returning colors, also return class IDs
+
+        cls_ids = [np.argmax(np.bincount(m, weights=1/(1+d))) for d, m in zip(dist, semseg[ind])]
+        cls_ids = np.array(cls_ids, dtype=np.int32)
+        colors = np.array([cmap(i)[:3] for i in cls_ids])
+
+        return points, colors, cls_ids
+    
     @torch.no_grad()
     def panoptic_query(self, t_emb, points, colors=None, cmap=None, metadata=None, overlap_threshold=0.7):
         buf_indices = self.world.hashmap().active_buf_indices()
