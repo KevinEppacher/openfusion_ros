@@ -16,20 +16,27 @@ def generate_launch_description():
         'RCUTILS_CONSOLE_OUTPUT_FORMAT', '{message}'
     )
 
-
     sim_time_arg = DeclareLaunchArgument(
         'use_sim_time', default_value='true',
         description='Flag to enable use_sim_time'
     )
 
-    use_sim_time = LaunchConfiguration('use_sim_time')
-
-
-    openfusion_ros_config = os.path.join(
+    openfusion_ros_default_config = os.path.join(
         get_package_share_directory("openfusion_ros"),
         'config',
         'openfusion_ros.yaml'
     )
+
+    openfusion_config_arg = DeclareLaunchArgument(
+        'openfusion_config',
+        default_value=openfusion_ros_default_config,
+        description='Path to OpenFusion ROS config file'
+    )
+
+    use_sim_time = LaunchConfiguration('use_sim_time')
+
+
+    openfusion_config = LaunchConfiguration('openfusion_config')
 
     openfusion_ros_node = Node(
         package='openfusion_ros',
@@ -41,7 +48,7 @@ def generate_launch_description():
         # arguments=['--ros-args', '--log-level', 'debug'],
         parameters=[
             {'use_sim_time': use_sim_time},
-            openfusion_ros_config
+            openfusion_config
         ]
     )
 
@@ -53,13 +60,16 @@ def generate_launch_description():
         output='screen',
         parameters=[
             {'use_sim_time': use_sim_time},
-            openfusion_ros_config
+            openfusion_config
         ]
     )
 
     ld = LaunchDescription()
     ld.add_action(console_format)
+    # Arguments
     ld.add_action(sim_time_arg)
+    ld.add_action(openfusion_config_arg)
+    # Nodes
     ld.add_action(openfusion_ros_node)
     ld.add_action(openfusion_tf_bridge_node)
     return ld

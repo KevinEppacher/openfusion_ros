@@ -1,8 +1,8 @@
 openfusion_ros:
   openfusion_ros:
     ros__parameters:
-      append_pose.max_rotation_deg: 15.0
-      append_pose.min_translation: 0.1
+      append_pose.max_rotation_deg: 45.0
+      append_pose.min_translation: 0.3
       append_pose.max_poses: 250
       dataset.annotation_version: v1.0
       dataset.root_dir: /app/src/sage_evaluator/sage_datasets/matterport_isaac
@@ -33,6 +33,10 @@ openfusion_ros:
       topic_names.slam_pointcloud: slam_pointcloud
       use_sim_time: true
       user_prompt_topic: /user_prompt
+      slam.voxel_size: 0.078125
+      slam.block_resolution: 8
+      slam.block_count: 60000
+      slam.depth_max: 10.0
 
   openfusion_tf_bridge:
     ros__parameters:

@@ -292,11 +292,34 @@ class FusionModelManager:
         node.declare_parameter("append_pose.max_rotation_deg", 5.0)
         node.declare_parameter("append_pose.max_poses", 1000)
         node.declare_parameter("encode_image_every_n_frames", 10)
+        node.declare_parameter("slam.voxel_size", 0.01953125)
+        node.declare_parameter("slam.block_resolution", 8)
+        node.declare_parameter("slam.block_count", 60000)
+        node.declare_parameter("slam.depth_max", 10.0)
 
         self.min_trans = node.get_parameter("append_pose.min_translation").value
         self.max_rot_deg = node.get_parameter("append_pose.max_rotation_deg").value
         self.max_poses = node.get_parameter("append_pose.max_poses").value
         self.encode_image_every_n_frames = node.get_parameter("encode_image_every_n_frames").value
+        self.voxel_size = node.get_parameter("slam.voxel_size").value
+        self.block_resolution = node.get_parameter("slam.block_resolution").value
+        self.block_count = node.get_parameter("slam.block_count").value
+        self.depth_max = node.get_parameter("slam.depth_max").value
+
+        self.print_parameters()
+    
+    def print_parameters(self):
+        self.node.get_logger().info(
+            f"{BLUE}{BOLD}FusionModelManager parameters:{RESET}\n"
+            f"  min_translation: {YELLOW}{self.min_trans:.3f}{RESET}\n"
+            f"  max_rotation_deg: {YELLOW}{self.max_rot_deg:.2f}{RESET}\n"
+            f"  max_poses: {YELLOW}{self.max_poses}{RESET}\n"
+            f"  encode_image_every_n_frames: {YELLOW}{self.encode_image_every_n_frames}{RESET}\n"
+            f"  voxel_size: {YELLOW}{self.voxel_size}{RESET}\n"
+            f"  block_resolution: {YELLOW}{self.block_resolution}{RESET}\n"
+            f"  block_count: {YELLOW}{self.block_count}{RESET}\n"
+            f"  depth_max: {YELLOW}{self.depth_max}{RESET}\n"
+        )
 
     def load(self):
         """Wait for camera info and RGB frame, then build OpenFusion SLAM."""
@@ -322,11 +345,12 @@ class FusionModelManager:
         # Prepare OpenFusion params
         params, args = prepare_openfusion_input(
             self.robot.camera.get_resized_camera_info(),
-            depth_max=10.0,
+            depth_max=self.depth_max,
             algorithm="vlfusion",
-            voxel_size=0.01953125,
-            block_resolution=8,
-            block_count=60000,
+            # voxel_size=0.01953125,
+            voxel_size=self.voxel_size,
+            block_resolution=self.block_resolution,
+            block_count=self.block_count,
             img_size=(img_w, img_h),
             input_size=(img_w, img_h)
         )
@@ -413,6 +437,32 @@ class SemanticProcessor:
             f"  classes: {YELLOW}{', '.join(self.class_list[:10])}... ({len(self.class_list)} total){RESET}"
         )
 
+        self.param_callback = self.node.add_on_set_parameters_callback(
+            self._on_param_update
+        )
+
+    def _on_param_update(self, params):
+        for p in params:
+            if p.name == "semantic.topk":
+                try:
+                    self.topk = int(p.value)
+                    self.node.get_logger().info(f"Updated semantic.topk → {self.topk}")
+                except Exception:
+                    return SetParametersResult(successful=False)
+
+            elif p.name == "semantic.min_score":
+                self.min_score = float(p.value)
+                self.node.get_logger().info(f"Updated semantic.min_score → {self.min_score}")
+
+            elif p.name == "semantic.max_score":
+                self.max_score = float(p.value)
+                self.node.get_logger().info(f"Updated semantic.max_score → {self.max_score}")
+
+            # elif p.name == "semantic.mode":
+            #     self.mode = str(p.value)
+            #     self.node.get_logger().info(f"Updated semantic.mode → {self.mode}")
+
+        return SetParametersResult(successful=True)
 
     def declare_param(self, name, default):
         if not self.node.has_parameter(name):
