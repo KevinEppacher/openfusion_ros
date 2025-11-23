@@ -2,25 +2,19 @@ from scipy.spatial.transform import Rotation as R
 import numpy as np
 import matplotlib.pyplot as plt
 
-def is_pose_unique(new_pose, poses, trans_diff_threshold=0.05, fov_deg=70.0):
-    """
-    Check if new_pose is significantly different from all poses in the list.
-    Rotation is compared against half of the FOV (i.e., cone angle).
-    """
-    if not poses or len(poses) == 0:
+def is_pose_unique(new_pose, poses, trans_diff_threshold=0.3, rot_diff_threshold=45.0):
+    if not poses:
         return True
-
-    half_fov_deg = fov_deg / 2.0
 
     for existing_pose in poses:
         trans_diff = np.linalg.norm(new_pose[:3, 3] - existing_pose[:3, 3])
 
         r1 = R.from_matrix(existing_pose[:3, :3])
         r2 = R.from_matrix(new_pose[:3, :3])
-        delta_r = r1.inv() * r2
-        angle_deg = np.degrees(np.abs(delta_r.magnitude()))
+        angle_deg = np.degrees((r1.inv() * r2).magnitude())
 
-        if trans_diff < trans_diff_threshold and angle_deg < half_fov_deg:
+        # Reject pose if BOTH thresholds are not exceeded
+        if trans_diff < trans_diff_threshold and angle_deg < rot_diff_threshold:
             return False
 
     return True

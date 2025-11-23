@@ -383,9 +383,13 @@ class FusionModelManager:
         pose_unique = is_pose_unique(
             T_camera_map, self.model.point_state.poses,
             trans_diff_threshold=self.min_trans,
-            fov_deg=self.max_rot_deg
+            rot_diff_threshold=self.max_rot_deg
         )
-
+        # If pointcloud is exceeds block_count threshold, skip appending new poses
+        active_blocks = self.model.point_state.world.hashmap().active_buf_indices().shape[0]
+        if active_blocks >= self.block_count:
+            self.node.get_logger().warn(f"Point cloud size exceeds block capacity: {active_blocks} / {self.block_count}; skipping further appends.")
+            return
         if not pose_unique:
             self.node.get_logger().info("Pose not unique enough; skipping append.")
             return
