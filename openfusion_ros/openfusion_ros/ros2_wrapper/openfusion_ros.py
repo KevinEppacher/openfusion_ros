@@ -387,6 +387,7 @@ class FusionModelManager:
         )
         # If pointcloud is exceeds block_count threshold, skip appending new poses
         active_blocks = self.model.point_state.world.hashmap().active_buf_indices().shape[0]
+        self.node.get_logger().info(f"Active blocks: {active_blocks} / {self.block_count}")
         if active_blocks >= self.block_count:
             self.node.get_logger().warn(f"Point cloud size exceeds block capacity: {active_blocks} / {self.block_count}; skipping further appends.")
             return
