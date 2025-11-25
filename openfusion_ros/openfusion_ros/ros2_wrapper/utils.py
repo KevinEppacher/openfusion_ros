@@ -9,7 +9,7 @@ from geometry_msgs.msg import Pose
 from tf_transformations import quaternion_from_matrix, euler_from_quaternion
 from scipy.spatial.transform import Rotation as R
 
-def is_pose_unique(new_pose_mat: np.ndarray, prev_pose_mat: np.ndarray,
+def is_pose_different(new_pose_mat: np.ndarray, prev_pose_mat: np.ndarray,
                    trans_diff_threshold=0.3, rot_diff_threshold=45.0):
     if prev_pose_mat is None or new_pose_mat is None:
         return True
@@ -26,6 +26,28 @@ def is_pose_unique(new_pose_mat: np.ndarray, prev_pose_mat: np.ndarray,
         print(f"Pose unique: trans_diff {trans_diff:.3f} >= {trans_diff_threshold} or angle_deg {angle_deg:.2f} >= {rot_diff_threshold}")
         return True
 
+def is_pose_unique(new_pose, poses, trans_diff_threshold=0.05, fov_deg=70.0):
+    """
+    Check if new_pose is significantly different from all poses in the list.
+    Rotation is compared against half of the FOV (i.e., cone angle).
+    """
+    if not poses or len(poses) == 0:
+        return True
+
+    half_fov_deg = fov_deg / 2.0
+
+    for existing_pose in poses:
+        trans_diff = np.linalg.norm(new_pose[:3, 3] - existing_pose[:3, 3])
+
+        r1 = R.from_matrix(existing_pose[:3, :3])
+        r2 = R.from_matrix(new_pose[:3, :3])
+        delta_r = r1.inv() * r2
+        angle_deg = np.degrees(np.abs(delta_r.magnitude()))
+
+        if trans_diff < trans_diff_threshold and angle_deg < half_fov_deg:
+            return False
+
+    return True
 
 # def should_integrate(new_pose, last_pose, trans_threshold=0.15, rot_threshold=5.0):
 #     if last_pose is None:

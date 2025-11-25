@@ -18,7 +18,7 @@ from rcl_interfaces.msg import SetParametersResult
 from openfusion_ros.utils import BLUE, YELLOW, RED, GREEN, BOLD, RESET
 from openfusion_ros.ros2_wrapper.robot import Robot
 from openfusion_ros.utils.utils import prepare_openfusion_input
-from openfusion_ros.ros2_wrapper.utils import is_pose_unique, map_scores_to_colors
+from openfusion_ros.ros2_wrapper.utils import is_pose_unique, is_pose_different
 from openfusion_ros.slam import build_slam, BaseSLAM
 from multimodal_query_msgs.msg import SemanticPrompt
 from std_srvs.srv import Trigger
@@ -382,7 +382,7 @@ class FusionModelManager:
         T_camera_map = np.linalg.inv(pose)
 
         # --- Pose uniqueness check (for pose array only) ---
-        pose_unique = is_pose_unique(
+        pose_different = is_pose_different(
             new_pose_mat = T_camera_map,
             prev_pose_mat = prev_pose,
             trans_diff_threshold=self.min_trans,
@@ -403,9 +403,19 @@ class FusionModelManager:
             self.node.get_logger().warn("Maximum number of poses reached; skipping further appends.")
             return
 
-        # --- Pose array limit ---
+        if not pose_different:
+            self.node.get_logger().info("Pose not different enough to previous pose; skipping fusion.")
+            return
+        
+        pose_unique = is_pose_unique(
+            new_pose=T_camera_map,
+            poses=self.model.point_state.poses,
+            trans_diff_threshold=self.min_trans,
+            fov_deg=self.max_rot_deg
+        )
+
         if not pose_unique:
-            self.node.get_logger().info("Pose not unique enough; skipping fusion.")
+            self.node.get_logger().info("Pose not unique compared to existing poses; skipping fusion.")
             return
 
         # --- Perform actual fusion ---
