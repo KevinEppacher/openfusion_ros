@@ -11,7 +11,6 @@ import tf_transformations
 import os
 import json
 import open3d as o3d
-from nav_msgs.msg import OccupancyGrid
 import re
 import subprocess
 from rcl_interfaces.msg import SetParametersResult
@@ -379,28 +378,44 @@ class FusionModelManager:
 
     def append_pose(self, pose_data):
         pose, rgb, depth = pose_data
+        prev_pose = self.model.point_state.poses[-1] if self.model.point_state.poses else None
         T_camera_map = np.linalg.inv(pose)
+
+        # --- Pose uniqueness check (for pose array only) ---
         pose_unique = is_pose_unique(
-            T_camera_map, self.model.point_state.poses,
+            new_pose_mat = T_camera_map,
+            prev_pose_mat = prev_pose,
             trans_diff_threshold=self.min_trans,
             rot_diff_threshold=self.max_rot_deg
         )
-        # If pointcloud is exceeds block_count threshold, skip appending new poses
+
+        # --- Hard block limit ---
         active_blocks = self.model.point_state.world.hashmap().active_buf_indices().shape[0]
         self.node.get_logger().info(f"Active blocks: {active_blocks} / {self.block_count}")
+
         if active_blocks >= self.block_count:
-            self.node.get_logger().warn(f"Point cloud size exceeds block capacity: {active_blocks} / {self.block_count}; skipping further appends.")
+            self.node.get_logger().warn(
+                f"Point cloud size exceeds block capacity: {active_blocks} / {self.block_count}; skipping further appends."
+            )
             return
-        if not pose_unique:
-            self.node.get_logger().info("Pose not unique enough; skipping append.")
-            return
+        
         if len(self.model.point_state.poses) >= self.max_poses:
             self.node.get_logger().warn("Maximum number of poses reached; skipping further appends.")
             return
+
+        # --- Pose array limit ---
+        if not pose_unique:
+            self.node.get_logger().info("Pose not unique enough; skipping fusion.")
+            return
+
+        # --- Perform actual fusion ---
+        self.model.point_state.poses.append(T_camera_map)
         self.iteration += 1
         self.model.io.update(rgb, depth, T_camera_map)
         self.model.vo()
-        self.model.compute_state(encode_image=(self.iteration % self.encode_image_every_n_frames == 0))
+        self.model.compute_state(
+            encode_image=(self.iteration % self.encode_image_every_n_frames == 0)
+        )
 
 class SemanticProcessor:
     def __init__(self, node, model_mgr, pub_mgr):
@@ -638,7 +653,6 @@ class OpenFusionNode(Node):
 
         # Internal timing state
         self.last_pcl_start = 0.0
-        self.last_pose_start = 0.0
 
     def _on_first_camera_info(self):
         """Called once when first CameraInfo arrives."""
