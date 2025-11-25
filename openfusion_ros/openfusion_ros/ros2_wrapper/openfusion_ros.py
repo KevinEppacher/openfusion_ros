@@ -14,6 +14,7 @@ import open3d as o3d
 import re
 import subprocess
 from rcl_interfaces.msg import SetParametersResult
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
 
 from openfusion_ros.utils import BLUE, YELLOW, RED, GREEN, BOLD, RESET
 from openfusion_ros.ros2_wrapper.robot import Robot
@@ -639,9 +640,16 @@ class OpenFusionNode(Node):
         self.pcl_period = self.get_parameter("timer_period.publish_pcl").get_parameter_value().double_value
         user_prompt_topic = self.get_parameter("user_prompt_topic").get_parameter_value().string_value
 
+        qos_semantic_prompt = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+
         # Subscribe for semantic prompts
         self.prompt_sub = self.create_subscription(
-            SemanticPrompt, user_prompt_topic, self.semantic_proc.handle_prompt, 10
+            SemanticPrompt, user_prompt_topic, self.semantic_proc.handle_prompt, qos_semantic_prompt
         )
 
         # Wait for camera info, then load model
