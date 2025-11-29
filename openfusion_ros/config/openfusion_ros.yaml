@@ -3,9 +3,9 @@ openfusion_ros:
     ros__parameters:
 
       append_pose:
-        max_rotation_deg: 45.0
-        min_translation: 0.3
-        max_poses: 250
+        max_rotation_deg: 90.0
+        min_translation: 0.6
+        max_poses: 1000
 
       dataset:
         annotation_version: v1.0
