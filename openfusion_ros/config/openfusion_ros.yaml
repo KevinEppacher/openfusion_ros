@@ -12,7 +12,7 @@ openfusion_ros:
         root_dir: /app/src/sage_evaluator/sage_datasets/matterport_isaac
         scene_name: 00800-TEEsavR23oF
 
-      encode_image_every_n_frames: 1
+      encode_image_every_n_frames: 10
 
       robot:
         camera:
@@ -51,13 +51,13 @@ openfusion_ros:
       user_prompt_topic: /user_prompt
 
       slam:
-        voxel_size: 0.078125         # lower resolution
-        # voxel_size: 0.01953125     # higher resolution
+        # voxel_size: 0.078125         # lower resolution
+        voxel_size: 0.01953125     # higher resolution
 
-        block_resolution: 2          # lower resolution
-        # block_resolution: 8        # higher resolution
+        # block_resolution: 2          # lower resolution
+        block_resolution: 8        # higher resolution
 
-        block_count: 100000
+        block_count: 500000
         depth_max: 10.0
 
 
