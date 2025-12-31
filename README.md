@@ -65,3 +65,15 @@ tsdf_trunc = voxel_size * 3
 ## Rule of Thumb
 
 **If voxel size increases by N× → block resolution must decrease by N×.**
+
+
+# Saving Semantic Maps in OpenFusion ROS
+
+```bash
+ros2 service call /openfusion_ros/run_semantic_map openfusion_msgs/srv/SaveSemanticMap "
+dataset_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac
+scene_name: 00800-TEEsavR23oF
+version: v1.1
+overwrite: true 
+"
+```

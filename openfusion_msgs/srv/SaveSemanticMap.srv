@@ -1,0 +1,40 @@
+# ============================================================
+# SaveSemanticMap.srv
+# ============================================================
+# Request
+# ============================================================
+
+# Root path of the dataset
+string dataset_path
+
+# Scene identifier
+string scene_name
+
+# Annotation version (empty = auto-version)
+string version
+
+# Overwrite existing annotation directory
+bool overwrite
+
+---
+# ============================================================
+# Response
+# ============================================================
+
+# Operation status
+bool success
+
+# Status or error message
+string message
+
+# Resolved annotation directory
+string annotation_dir
+
+# Saved semantic point cloud path
+string semantic_ply_path
+
+# Saved class mapping path
+string class_map_json_path
+
+# Base path of saved SLAM map (no extension)
+string slam_map_base_path

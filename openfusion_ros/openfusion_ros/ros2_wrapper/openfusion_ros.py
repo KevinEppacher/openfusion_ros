@@ -22,7 +22,7 @@ from openfusion_ros.utils.utils import prepare_openfusion_input
 from openfusion_ros.ros2_wrapper.utils import is_pose_unique, is_pose_different
 from openfusion_ros.slam import build_slam, BaseSLAM
 from multimodal_query_msgs.msg import SemanticPrompt
-from std_srvs.srv import Trigger
+from openfusion_msgs.srv import SaveSemanticMap
 
 # --------------------------------------------------------------------------- #
 # Semantic Map Saver (Auto-Versioning + SLAM Snapshot)
@@ -36,75 +36,146 @@ class SemanticMapSaver:
         # ------------------------------------------------------------------ #
         # Parameters
         # ------------------------------------------------------------------ #
-        node.declare_parameter("dataset.root_dir", "/app/src/sage_evaluator/datasets/matterport_isaac")
-        node.declare_parameter("dataset.scene_name", "00809-Qpor2mEya8F")
+        # node.declare_parameter("dataset.root_dir", "/app/src/sage_evaluator/datasets/matterport_isaac")
+        # node.declare_parameter("dataset.scene_name", "00809-Qpor2mEya8F")
         node.declare_parameter("slam.map_topic", "/map")
-        node.declare_parameter("slam.free_thresh", 0.25)  # <-- new parameter
+        node.declare_parameter("slam.free_thresh", 0.25)
 
-        self.root_dir = node.get_parameter("dataset.root_dir").value
-        self.scene_name = node.get_parameter("dataset.scene_name").value
+        # self.root_dir = node.get_parameter("dataset.root_dir").value
+        # self.scene_name = node.get_parameter("dataset.scene_name").value
         self.map_topic = node.get_parameter("slam.map_topic").value
         self.free_thresh = node.get_parameter("slam.free_thresh").value
 
-        # Derived paths
-        self.scene_dir = os.path.join(self.root_dir, self.scene_name)
-        self.annotations_dir = os.path.join(self.scene_dir, "annotations")
-        os.makedirs(self.annotations_dir, exist_ok=True)
+        # # Derived paths
+        # self.scene_dir = os.path.join(self.root_dir, self.scene_name)
+        # self.annotations_dir = os.path.join(self.scene_dir, "annotations")
+        # os.makedirs(self.annotations_dir, exist_ok=True)
 
-        # Auto version detection
-        self.annotation_version = self._get_next_version()
-        self.annotation_dir = os.path.join(self.annotations_dir, self.annotation_version)
-        os.makedirs(self.annotation_dir, exist_ok=True)
+        # # Auto version detection
+        # self.annotation_version = self._get_next_version()
+        # self.annotation_dir = os.path.join(self.annotations_dir, self.annotation_version)
+        # os.makedirs(self.annotation_dir, exist_ok=True)
 
-        node.get_logger().info(
-            f"{BLUE}SemanticMapSaver initialized:{RESET}\n"
-            f"  Scene: {self.scene_name}\n"
-            f"  New Annotation version: {self.annotation_version}\n"
-            f"  Output directory: {self.annotation_dir}\n"
-            f"  Free threshold for map export: {self.free_thresh}"
-        )
+        # node.get_logger().info(
+        #     f"{BLUE}SemanticMapSaver initialized:{RESET}\n"
+        #     f"  Scene: {self.scene_name}\n"
+        #     f"  New Annotation version: {self.annotation_version}\n"
+        #     f"  Output directory: {self.annotation_dir}\n"
+        #     f"  Free threshold for map export: {self.free_thresh}"
+        # )
+
+    # # ------------------------------------------------------------------ #
+    # # Detect latest version and increment it (e.g., v1.0 → v1.1)
+    # # ------------------------------------------------------------------ #
+    # def _get_next_version(self):
+    #     existing = [
+    #         d for d in os.listdir(self.annotations_dir)
+    #         if re.match(r"^v\d+\.\d+$", d) and os.path.isdir(os.path.join(self.annotations_dir, d))
+    #     ]
+    #     if not existing:
+    #         return "v1.0"
+
+    #     # Sort by numeric version (major.minor)
+    #     def parse_version(v):
+    #         major, minor = v[1:].split(".")
+    #         return int(major), int(minor)
+
+    #     existing.sort(key=parse_version)
+    #     last_major, last_minor = parse_version(existing[-1])
+    #     new_version = f"v{last_major}.{last_minor + 1}"
+    #     return new_version
 
     # ------------------------------------------------------------------ #
-    # Detect latest version and increment it (e.g., v1.0 → v1.1)
+    # Resolve dataset / annotation paths from service request
     # ------------------------------------------------------------------ #
-    def _get_next_version(self):
+    def resolve_from_request(self, request):
+        """
+        Apply SaveSemanticMap request overrides.
+        Parameters stay as defaults unless explicitly overridden.
+        """
+
+        dataset_root = request.dataset_path or self.root_dir
+        scene_name = request.scene_name or self.scene_name
+
+        scene_dir = os.path.join(dataset_root, scene_name)
+        annotations_dir = os.path.join(scene_dir, "annotations")
+        os.makedirs(annotations_dir, exist_ok=True)
+
+        # --- Version handling ---
+        if request.version:
+            annotation_version = request.version
+        else:
+            annotation_version = self._get_next_version_in_dir(annotations_dir)
+
+        annotation_dir = os.path.join(annotations_dir, annotation_version)
+
+        if os.path.exists(annotation_dir) and not request.overwrite:
+            raise RuntimeError(
+                f"Annotation directory already exists and overwrite=false: {annotation_dir}"
+            )
+
+        os.makedirs(annotation_dir, exist_ok=True)
+
+        return {
+            "dataset_root": dataset_root,
+            "scene_name": scene_name,
+            "scene_dir": scene_dir,
+            "annotations_dir": annotations_dir,
+            "annotation_version": annotation_version,
+            "annotation_dir": annotation_dir
+        }
+    
+    def _get_next_version_in_dir(self, annotations_dir):
         existing = [
-            d for d in os.listdir(self.annotations_dir)
-            if re.match(r"^v\d+\.\d+$", d) and os.path.isdir(os.path.join(self.annotations_dir, d))
+            d for d in os.listdir(annotations_dir)
+            if re.match(r"^v\d+\.\d+$", d)
+            and os.path.isdir(os.path.join(annotations_dir, d))
         ]
+
         if not existing:
             return "v1.0"
 
-        # Sort by numeric version (major.minor)
-        def parse_version(v):
+        def parse(v):
             major, minor = v[1:].split(".")
             return int(major), int(minor)
 
-        existing.sort(key=parse_version)
-        last_major, last_minor = parse_version(existing[-1])
-        new_version = f"v{last_major}.{last_minor + 1}"
-        return new_version
+        existing.sort(key=parse)
+        major, minor = parse(existing[-1])
+        return f"v{major}.{minor + 1}"
 
     # ------------------------------------------------------------------ #
     # Save Semantic Map + SLAM map
     # ------------------------------------------------------------------ #
-    def save(self, points, colors, class_ids, class_list, filename_prefix="semantic_map"):
+    def save(
+            self,
+            points,
+            colors,
+            class_ids,
+            class_list,
+            filename_prefix="semantic_map",
+            resolved_paths=None
+        ):
         """Save semantic pointcloud, class mapping, and SLAM map using Nav2 CLI."""
+
+        if resolved_paths is None:
+            raise RuntimeError("save() called without resolved_paths")
+        annotation_dir = resolved_paths["annotation_dir"]
+        annotations_dir = resolved_paths["annotations_dir"]
 
         if points is None or len(points) == 0:
             self.node.get_logger().warn("No points to save — skipping.")
             return
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        ply_path = os.path.join(self.annotation_dir, f"{filename_prefix}_{timestamp}.ply")
-        json_path = os.path.join(self.annotation_dir, f"{filename_prefix}_{timestamp}.json")
-        map_base = os.path.join(self.annotation_dir, f"slam_map_{timestamp}")
+        ply_path = os.path.join(annotation_dir, f"{filename_prefix}_{timestamp}.ply")
+        json_path = os.path.join(annotation_dir, f"{filename_prefix}_{timestamp}.json")
+        map_base = os.path.join(annotation_dir, f"slam_map_{timestamp}")
 
         # ------------------------------------------------------------------ #
         # Save default robot_start_pose.json
         # ------------------------------------------------------------------ #
         try:
-            start_pose_path = os.path.join(self.annotation_dir, "robot_start_pose.json")
+            start_pose_path = os.path.join(annotation_dir, "robot_start_pose.json")
             if not os.path.exists(start_pose_path):
                 start_pose = {
                     "x": 0.0,
@@ -173,11 +244,11 @@ class SemanticMapSaver:
         # ------------------------------------------------------------------ #
         # Update 'current' symlink
         # ------------------------------------------------------------------ #
-        current_link = os.path.join(self.annotations_dir, "current")
+        current_link = os.path.join(annotations_dir, "current")
         try:
             if os.path.islink(current_link) or os.path.exists(current_link):
                 os.remove(current_link)
-            os.symlink(self.annotation_dir, current_link)
+            os.symlink(annotation_dir, current_link)
             self.node.get_logger().info(f"{BLUE}Updated 'current' annotation link → {current_link}{RESET}")
         except Exception as e:
             self.node.get_logger().warn(f"{YELLOW}Could not update 'current' link: {e}{RESET}")
@@ -574,7 +645,6 @@ class SemanticProcessor:
                 scores = np.zeros(len(points), dtype=np.float32)
             elif len(result) == 3:
                 points, colors, class_ids = result
-                self.saver.save(points, colors, class_ids, self.class_list, filename_prefix=mode)
             else:
                 self.node.get_logger().warn("Unexpected number of return values from query.")
 
@@ -590,7 +660,7 @@ class SemanticProcessor:
                 self.pub_mgr.publish_panoptic("map", points, colors)
 
             self.node.get_logger().info(f"{mode.capitalize()} map published ({len(points)} points).")
-
+            return points, colors, class_ids
         except Exception as e:
             self.node.get_logger().error(f"{RED}Auto query failed: {e}{RESET}")
 
@@ -662,12 +732,13 @@ class OpenFusionNode(Node):
         self.timer_pcl = self.create_timer(self.pcl_period, self.publish_pcl)
         self.timer_pose = self.create_timer(self.update_pose_period, self.update_pose)
 
-        # Services for semantic & panoptic triggers
+        # Services for semantic & panoptic
         self.semantic_srv = self.create_service(
-            Trigger, "run_semantic_map", self.run_semantic_cb)
+            SaveSemanticMap, "run_semantic_map", self.run_semantic_cb)
+
         self.panoptic_srv = self.create_service(
-            Trigger, "run_panoptic_map", self.run_panoptic_cb)
-        self.get_logger().info("Semantic & panoptic trigger services ready.")
+            SaveSemanticMap, "run_panoptic_map", self.run_panoptic_cb)
+        self.get_logger().info("Semantic & panoptic services ready.")
 
         # Internal timing state
         self.last_pcl_start = 0.0
@@ -718,21 +789,64 @@ class OpenFusionNode(Node):
     def run_semantic_cb(self, request, response):
         try:
             self.semantic_proc.mode = "semantic"
-            self.semantic_proc.process_auto()
+
+            # Resolve dataset overrides (or fall back to params)
+            resolved = self.semantic_proc.saver.resolve_from_request(request)
+
+            # Run semantic processing
+            result = self.semantic_proc.process_auto()
+
+            # Save semantic output
+            points, colors, class_ids = result
+            self.semantic_proc.saver.save(
+                points=points,
+                colors=colors,
+                class_ids=class_ids,
+                class_list=self.semantic_proc.class_list,
+                filename_prefix="semantic",
+                resolved_paths=resolved
+            )
+
             response.success = True
-            response.message = "Semantic map generation completed."
+            response.message = "Semantic map generation and save completed."
+            response.annotation_dir = resolved["annotation_dir"]
+            response.semantic_ply_path = ""
+            response.class_map_json_path = ""
+            response.slam_map_base_path = ""
+
         except Exception as e:
             response.success = False
-            response.message = f"Semantic map failed: {e}"
+            response.message = str(e)
+
         return response
 
     def run_panoptic_cb(self, request, response):
         try:
             self.semantic_proc.mode = "panoptic"
-            self.semantic_proc.process_auto()
+
+            resolved = self.semantic_proc.saver.resolve_from_request(request)
+
+            result = self.semantic_proc.process_auto()
+
+            points, colors, class_ids = result
+            self.semantic_proc.saver.save(
+                points=points,
+                colors=colors,
+                class_ids=class_ids,
+                class_list=self.semantic_proc.class_list,
+                filename_prefix="panoptic",
+                resolved_paths=resolved
+            )
+
             response.success = True
-            response.message = "Panoptic map generation completed."
+            response.message = "Panoptic map generation and save completed."
+            response.annotation_dir = resolved["annotation_dir"]
+            response.semantic_ply_path = ""
+            response.class_map_json_path = ""
+            response.slam_map_base_path = ""
+
         except Exception as e:
             response.success = False
-            response.message = f"Panoptic map failed: {e}"
+            response.message = str(e)
+
         return response
