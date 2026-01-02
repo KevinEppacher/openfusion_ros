@@ -74,6 +74,7 @@ ros2 service call /openfusion_ros/run_semantic_map openfusion_msgs/srv/SaveSeman
 dataset_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac
 scene_name: 00800-TEEsavR23oF
 version: v1.1
-overwrite: true 
+semantic_class_list_path: /app/src/sage_evaluator/datasets/matterport_isaac/00800-TEEsavR23oF/assets/classes.json
+overwrite: true
 "
 ```

@@ -13,6 +13,9 @@ string scene_name
 # Annotation version (empty = auto-version)
 string version
 
+# Path of the semantic class for which OpenFusion needs to segment
+string semantic_class_list_path
+
 # Overwrite existing annotation directory
 bool overwrite
 

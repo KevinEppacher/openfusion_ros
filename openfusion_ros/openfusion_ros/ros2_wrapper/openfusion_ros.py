@@ -543,6 +543,36 @@ class SemanticProcessor:
             self._on_param_update
         )
 
+    def resolve_class_list_for_request(self, request):
+        """
+        Resolve semantic class list with priority:
+        1) Service request
+        2) Node parameter
+        3) Default list
+        """
+
+        # 1) Service override
+        if request.semantic_class_list_path:
+            path = request.semantic_class_list_path
+            self.node.get_logger().info(
+                f"{BLUE}Using semantic class list from service request: {path}{RESET}"
+            )
+            return self.load_class_list(path, self.class_list)
+
+        # 2) Parameter fallback
+        param_path = self.node.get_parameter("semantic.class_list_path").value
+        if param_path:
+            self.node.get_logger().info(
+                f"{BLUE}Using semantic class list from parameter: {param_path}{RESET}"
+            )
+            return self.load_class_list(param_path, self.class_list)
+
+        # 3) Default
+        self.node.get_logger().info(
+            f"{YELLOW}Using default semantic class list ({len(self.class_list)} classes){RESET}"
+        )
+        return self.class_list
+
     def _on_param_update(self, params):
         for p in params:
             if p.name == "semantic.topk":
@@ -559,10 +589,6 @@ class SemanticProcessor:
             elif p.name == "semantic.max_score":
                 self.max_score = float(p.value)
                 self.node.get_logger().info(f"Updated semantic.max_score → {self.max_score}")
-
-            # elif p.name == "semantic.mode":
-            #     self.mode = str(p.value)
-            #     self.node.get_logger().info(f"Updated semantic.mode → {self.mode}")
 
         return SetParametersResult(successful=True)
 
@@ -604,11 +630,6 @@ class SemanticProcessor:
                 self.node.get_logger().warn(f"Query '{text_query}' returned no points.")
                 return
 
-            # colors = map_scores_to_colors(
-            #     query_points, scores,
-            #     vmin=self.min_score, vmax=self.max_score
-            # )
-
             # self.pub_mgr.publish_pointcloud("map", query_points, colors)
             self.pub_mgr.publish_query("map", query_points, scores)
 
@@ -619,18 +640,24 @@ class SemanticProcessor:
         except Exception as e:
             self.node.get_logger().error(f"{RED}Semantic query failed: {e}{RESET}")
 
-    def process_auto(self):
+    def process_auto(self, class_list_override=None):
         model = self.model_mgr.model
         if model is None or not isinstance(model, BaseSLAM):
             self.node.get_logger().warn("Model not initialized or not BaseSLAM instance.")
             return
+        
+        effective_class_list = (
+            class_list_override
+            if class_list_override is not None
+            else self.class_list
+        )
 
         try:
             mode = self.mode.lower()
             if mode == "panoptic" and hasattr(model, "panoptic_query"):
-                result = model.panoptic_query(self.class_list)
+                result = model.panoptic_query(effective_class_list)
             elif mode == "semantic" and hasattr(model, "semantic_query"):
-                result = model.semantic_query(self.class_list)
+                result = model.semantic_query(effective_class_list)
             elif mode == "query" and self.semantic_input:
                 result = model.query(self.semantic_input.text_query, topk=self.topk, only_poi=True)
             else:
@@ -793,8 +820,10 @@ class OpenFusionNode(Node):
             # Resolve dataset overrides (or fall back to params)
             resolved = self.semantic_proc.saver.resolve_from_request(request)
 
+            class_list = self.semantic_proc.resolve_class_list_for_request(request)
+
             # Run semantic processing
-            result = self.semantic_proc.process_auto()
+            result = self.semantic_proc.process_auto(class_list_override=class_list)
 
             # Save semantic output
             points, colors, class_ids = result
@@ -802,7 +831,7 @@ class OpenFusionNode(Node):
                 points=points,
                 colors=colors,
                 class_ids=class_ids,
-                class_list=self.semantic_proc.class_list,
+                class_list=class_list or self.semantic_proc.class_list,
                 filename_prefix="semantic",
                 resolved_paths=resolved
             )
