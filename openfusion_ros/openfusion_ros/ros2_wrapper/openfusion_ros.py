@@ -465,7 +465,7 @@ class FusionModelManager:
         active_blocks = self.model.point_state.world.hashmap().active_buf_indices().shape[0]
         self.node.get_logger().info(f"Active blocks: {active_blocks} / {self.block_count}")
 
-        if active_blocks >= self.block_count:
+        if active_blocks >= (self.block_count * 0.95):
             self.node.get_logger().warn(
                 f"Point cloud size exceeds block capacity: {active_blocks} / {self.block_count}; skipping further appends."
             )
@@ -506,37 +506,37 @@ class SemanticProcessor:
         self.pub_mgr = pub_mgr
         self.saver = SemanticMapSaver(node)
 
-        # --- Declare configurable parameters ------------------------------
-        self.mode = self.declare_param("semantic.mode", "query")
-        self.topk = self.declare_param("semantic.topk", 3)
-        self.min_score = self.declare_param("semantic.min_score", 0.1)
-        self.max_score = self.declare_param("semantic.max_score", 1.0)
-
-        # Class list configuration
-        class_list_path = self.declare_param("semantic.class_list_path", "")
-
+        # ---------------- Default class list ----------------
         default_class_list = [
             "vase", "table", "tv shelf", "curtain", "wall", "floor", "ceiling",
             "door", "tv", "room plant", "light", "sofa", "cushion", "wall paint", "chair"
         ]
 
-        # --- Load class list dynamically ---
-        self.class_list = self.load_class_list(
-            class_list_path=class_list_path,
-            default_list=default_class_list
-        )
+        # ---------------- Parameters ----------------
+        self.mode = self.declare_param("semantic.mode", "query")
+        self.topk = self.declare_param("semantic.topk", 3)
+        self.min_score = self.declare_param("semantic.min_score", 0.1)
+        self.max_score = self.declare_param("semantic.max_score", 1.0)
 
-        # Store latest prompt input
+        self.node.declare_parameter("semantic.class_list", default_class_list)
+        class_list_path = self.declare_param("semantic.class_list_path", "")
+
+        # ---------------- Initial class list resolution ----------------
+        if class_list_path:
+            self.class_list = self.load_class_list(class_list_path, default_class_list)
+        else:
+            self.class_list = self.node.get_parameter("semantic.class_list").value
+
         self.semantic_input = None
 
-        # --- Log summary ---
+        # ---------------- Logging ----------------
         self.node.get_logger().info(
             f"{BLUE}{BOLD}SemanticProcessor initialized:{RESET}\n"
             f"  mode: {YELLOW}{self.mode}{RESET}\n"
             f"  topk: {YELLOW}{self.topk}{RESET}\n"
             f"  score range: {YELLOW}{self.min_score} – {self.max_score}{RESET}\n"
-            f"  class source: {YELLOW}{'JSON file' if class_list_path else 'ROS param'}{RESET}\n"
-            f"  classes: {YELLOW}{', '.join(self.class_list[:10])}... ({len(self.class_list)} total){RESET}"
+            f"  classes: {YELLOW}{', '.join(self.class_list[:10])}"
+            f"... ({len(self.class_list)} total){RESET}"
         )
 
         self.param_callback = self.node.add_on_set_parameters_callback(
@@ -545,13 +545,13 @@ class SemanticProcessor:
 
     def resolve_class_list_for_request(self, request):
         """
-        Resolve semantic class list with priority:
+        Priority:
         1) Service request
         2) Node parameter
-        3) Default list
+        3) Default (already stored in self.class_list)
         """
 
-        # 1) Service override
+        # --- 1) Service override ---
         if request.semantic_class_list_path:
             path = request.semantic_class_list_path
             self.node.get_logger().info(
@@ -559,7 +559,7 @@ class SemanticProcessor:
             )
             return self.load_class_list(path, self.class_list)
 
-        # 2) Parameter fallback
+        # --- 2) Parameter override ---
         param_path = self.node.get_parameter("semantic.class_list_path").value
         if param_path:
             self.node.get_logger().info(
@@ -567,7 +567,7 @@ class SemanticProcessor:
             )
             return self.load_class_list(param_path, self.class_list)
 
-        # 3) Default
+        # --- 3) Cached default ---
         self.node.get_logger().info(
             f"{YELLOW}Using default semantic class list ({len(self.class_list)} classes){RESET}"
         )
@@ -692,29 +692,29 @@ class SemanticProcessor:
             self.node.get_logger().error(f"{RED}Auto query failed: {e}{RESET}")
 
     def load_class_list(self, class_list_path: str, default_list: list):
-        """Load class list from JSON file if available, otherwise use parameter or default."""
-        # 1. If JSON path is given and valid, try to load
+        """Load class list from JSON file if available, otherwise fall back safely."""
         if class_list_path and os.path.exists(class_list_path):
             try:
                 with open(class_list_path, "r") as f:
                     loaded = json.load(f)
-                if isinstance(loaded, list):
+
+                if isinstance(loaded, list) and all(isinstance(x, str) for x in loaded):
                     self.node.get_logger().info(
-                        f"{BOLD}Loaded class list from JSON file:{RESET} {class_list_path}"
+                        f"{BOLD}Loaded class list from JSON:{RESET} {class_list_path}"
                     )
                     return loaded
-                else:
-                    self.node.get_logger().warn(
-                        f"Invalid format in {class_list_path}, expected a list. Using default class list."
-                    )
-                    return default_list
-            except Exception as e:
-                self.node.get_logger().error(f"Failed to load class list from {class_list_path}: {e}")
-                return default_list
 
-        # 2. If JSON path not provided or invalid → use declared param or fallback
-        return self.declare_param("semantic.class_list", default_list)
-    
+                self.node.get_logger().warn(
+                    f"Invalid class list format in {class_list_path}, using fallback."
+                )
+
+            except Exception as e:
+                self.node.get_logger().error(
+                    f"Failed to load class list from {class_list_path}: {e}"
+                )
+
+        return default_list
+
 # --------------------------------------------------------------------------- #
 # Main Node
 # --------------------------------------------------------------------------- #
@@ -822,6 +822,12 @@ class OpenFusionNode(Node):
 
             class_list = self.semantic_proc.resolve_class_list_for_request(request)
 
+            # Print all used classes
+            self.get_logger().info(
+                f"{BLUE}{BOLD}Using semantic classes for saving:{RESET}\n" +
+                "\n".join([f"  {i}: {name}" for i, name in enumerate(class_list)])
+            )
+
             # Run semantic processing
             result = self.semantic_proc.process_auto(class_list_override=class_list)
 
@@ -854,15 +860,16 @@ class OpenFusionNode(Node):
             self.semantic_proc.mode = "panoptic"
 
             resolved = self.semantic_proc.saver.resolve_from_request(request)
+            class_list = self.semantic_proc.resolve_class_list_for_request(request)
 
-            result = self.semantic_proc.process_auto()
+            result = self.semantic_proc.process_auto(class_list_override=class_list)
 
             points, colors, class_ids = result
             self.semantic_proc.saver.save(
                 points=points,
                 colors=colors,
                 class_ids=class_ids,
-                class_list=self.semantic_proc.class_list,
+                class_list=class_list,
                 filename_prefix="panoptic",
                 resolved_paths=resolved
             )
@@ -870,9 +877,6 @@ class OpenFusionNode(Node):
             response.success = True
             response.message = "Panoptic map generation and save completed."
             response.annotation_dir = resolved["annotation_dir"]
-            response.semantic_ply_path = ""
-            response.class_map_json_path = ""
-            response.slam_map_base_path = ""
 
         except Exception as e:
             response.success = False
