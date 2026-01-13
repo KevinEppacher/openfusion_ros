@@ -89,3 +89,36 @@ semantic_class_list_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac
 overwrite: true
 "
 ```
+
+**Scene name: 00814-p53SfW6mjZe**
+```bash
+ros2 service call /openfusion_ros/run_semantic_map openfusion_msgs/srv/SaveSemanticMap "
+dataset_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac
+scene_name: 00814-p53SfW6mjZe
+version: v1.4
+semantic_class_list_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac/00814-p53SfW6mjZe/assets/classes.json
+overwrite: true
+"
+```
+
+**Scene name: 00824-Dd4bFSTQ8gi**
+```bash
+ros2 service call /openfusion_ros/run_semantic_map openfusion_msgs/srv/SaveSemanticMap "
+dataset_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac
+scene_name: 00824-Dd4bFSTQ8gi
+version: v1.0
+semantic_class_list_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac/00824-Dd4bFSTQ8gi/assets/classes.json
+overwrite: true
+"
+```
+
+**Scene name: 00848-ziup5kvtCCR**
+```bash
+ros2 service call /openfusion_ros/run_semantic_map openfusion_msgs/srv/SaveSemanticMap "
+dataset_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac
+scene_name: 00848-ziup5kvtCCR
+semantic_class_list_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac/00848-ziup5kvtCCR/assets/classes.json
+version: v1.0
+overwrite: true
+"
+```
