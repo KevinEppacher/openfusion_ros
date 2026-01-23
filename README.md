@@ -122,3 +122,25 @@ version: v1.0
 overwrite: true
 "
 ```
+
+**Scene name: 00876-mv2HUxq3B53**
+```bash
+ros2 service call /openfusion_ros/run_semantic_map openfusion_msgs/srv/SaveSemanticMap "
+dataset_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac
+scene_name: 00876-mv2HUxq3B53
+semantic_class_list_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac/00876-mv2HUxq3B53/assets/classes.json
+version: v1.0
+overwrite: true
+"
+```
+
+**Scene name: 00800-TEEsavR23oF**
+```bash
+ros2 service call /openfusion_ros/run_semantic_map openfusion_msgs/srv/SaveSemanticMap "
+dataset_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac
+scene_name: 00800-TEEsavR23oF
+semantic_class_list_path: /app/src/sage_evaluator/sage_datasets/matterport_isaac/00800-TEEsavR23oF/assets/classes.json
+version: v1.11
+overwrite: true
+"
+```

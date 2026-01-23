@@ -36,8 +36,6 @@ class SemanticMapSaver:
         # ------------------------------------------------------------------ #
         # Parameters
         # ------------------------------------------------------------------ #
-        # node.declare_parameter("dataset.root_dir", "/app/src/sage_evaluator/datasets/matterport_isaac")
-        # node.declare_parameter("dataset.scene_name", "00809-Qpor2mEya8F")
         node.declare_parameter("slam.map_topic", "/map")
         node.declare_parameter("slam.free_thresh", 0.25)
 
@@ -45,45 +43,6 @@ class SemanticMapSaver:
         # self.scene_name = node.get_parameter("dataset.scene_name").value
         self.map_topic = node.get_parameter("slam.map_topic").value
         self.free_thresh = node.get_parameter("slam.free_thresh").value
-
-        # # Derived paths
-        # self.scene_dir = os.path.join(self.root_dir, self.scene_name)
-        # self.annotations_dir = os.path.join(self.scene_dir, "annotations")
-        # os.makedirs(self.annotations_dir, exist_ok=True)
-
-        # # Auto version detection
-        # self.annotation_version = self._get_next_version()
-        # self.annotation_dir = os.path.join(self.annotations_dir, self.annotation_version)
-        # os.makedirs(self.annotation_dir, exist_ok=True)
-
-        # node.get_logger().info(
-        #     f"{BLUE}SemanticMapSaver initialized:{RESET}\n"
-        #     f"  Scene: {self.scene_name}\n"
-        #     f"  New Annotation version: {self.annotation_version}\n"
-        #     f"  Output directory: {self.annotation_dir}\n"
-        #     f"  Free threshold for map export: {self.free_thresh}"
-        # )
-
-    # # ------------------------------------------------------------------ #
-    # # Detect latest version and increment it (e.g., v1.0 → v1.1)
-    # # ------------------------------------------------------------------ #
-    # def _get_next_version(self):
-    #     existing = [
-    #         d for d in os.listdir(self.annotations_dir)
-    #         if re.match(r"^v\d+\.\d+$", d) and os.path.isdir(os.path.join(self.annotations_dir, d))
-    #     ]
-    #     if not existing:
-    #         return "v1.0"
-
-    #     # Sort by numeric version (major.minor)
-    #     def parse_version(v):
-    #         major, minor = v[1:].split(".")
-    #         return int(major), int(minor)
-
-    #     existing.sort(key=parse_version)
-    #     last_major, last_minor = parse_version(existing[-1])
-    #     new_version = f"v{last_major}.{last_minor + 1}"
-    #     return new_version
 
     # ------------------------------------------------------------------ #
     # Resolve dataset / annotation paths from service request
